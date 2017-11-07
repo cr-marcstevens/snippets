@@ -160,6 +160,7 @@ namespace program_options {
 		class value_base {
 		public:
 			virtual ~value_base() {}
+			virtual bool _hasdefaultvalue() = 0;
 			virtual std::vector<std::string> _defaultvaluestr() = 0;
 			virtual void _parse(const parser& arg) = 0;
 		};
@@ -255,6 +256,10 @@ namespace program_options {
 			return *this;
 		}
 
+		virtual bool _hasdefaultvalue()
+		{
+			return _defaultvalue.get() != nullptr;
+		}
 		virtual std::vector<std::string> _defaultvaluestr()
 		{
 			if (_defaultvalue.get() != nullptr)
@@ -448,16 +453,17 @@ namespace program_options {
 		std::vector<detail::parser> positional;
 		std::set<option> _options;
 	};
+	using parsed_options = variables_map;
 
 	/* the main parser: commandline parser */
-	class parsed_options {
+	class command_line_parser {
 	public:
-		parsed_options()
+		command_line_parser()
 			: _allow_unregistered(false), _allow_positional(false)
 		{
 		}
 
-		parsed_options(int argc, char** argv)
+		command_line_parser(int argc, char** argv)
 			: _allow_unregistered(false), _allow_positional(false)
 		{
 			if (argc < 1) throw;
@@ -466,7 +472,7 @@ namespace program_options {
 				_argv[i-1] = std::string(argv[i]);
 		}
 
-		parsed_options& options(const options_description& od)
+		command_line_parser& options(const options_description& od)
 		{
 			for (std::size_t i = 0; i < od._options.size(); ++i)
 			{
@@ -488,22 +494,26 @@ namespace program_options {
 			return *this;
 		}
 
-		parsed_options& allow_unregistered()
+		command_line_parser& allow_unregistered()
 		{
 			_allow_unregistered = true;
 			return *this;
 		}
-		parsed_options& allow_positional()
+		command_line_parser& allow_positional()
 		{
 			_allow_positional = true;
 			return *this;
 		}
 
-		parsed_options& run()
+		command_line_parser& run()
 		{
 			_vm = variables_map();
 			for (auto o : _options)
+			{
 				_vm._options.insert(o);
+				if (o->value.get() != nullptr && o->value->_hasdefaultvalue())
+					_vm[o->longopt]._set(o->value);
+			}
 			for (std::size_t i = 0; i < _argv.size(); ++i)
 			{
 				if (_argv[i] == "--")
@@ -558,7 +568,9 @@ namespace program_options {
 			if (!_allow_positional && !_vm.positional.empty())
 				throw std::runtime_error("Unrecognized program option: " + _vm.positional[0].values().front());
 			return *this;
-		}		
+		}
+
+		operator const variables_map&() const { return _vm; }
 
 		const variables_map& vm() const { return _vm; }
 		const std::vector<std::string>& unrecognized() const { return _vm.unrecognized; }
@@ -572,7 +584,6 @@ namespace program_options {
 		std::vector<std::string> _argv;
 		variables_map _vm;
 	};
-	using command_line_parser = parsed_options;
 
 	inline void store(const variables_map& src, variables_map& dest)
 	{
@@ -592,17 +603,13 @@ namespace program_options {
 		for (auto& s : src.positional)
 			dest.positional.emplace_back(s);
 	}
-	inline void store(const parsed_options& po, variables_map& vm)
-	{
-		store(po.vm(), vm);
-	}
 
 	inline void notify(variables_map& vm)
 	{
 		// register options with default values
 		for (auto& o : vm._options)
 		{
-			if (o->value.get() != nullptr && ! o->value->_defaultvaluestr().empty())
+			if (o->value.get() != nullptr && o->value->_hasdefaultvalue())
 				vm[o->longopt]._set(o->value);
 		}
 		// finalize all options
