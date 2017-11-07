@@ -1,6 +1,6 @@
 /*********************************************************************************\
 *                                                                                 *
-* https://github.com/cr-marcstevens/snippets/cxxheaderonly/program_options.hpp    *
+* https://github.com/cr-marcstevens/snippets/tree/master/cxxheaderonly            *
 *                                                                                 *
 * program_options.hpp - A header only C++ boost-like program options class        *
 * Copyright (c) 2017 Marc Stevens                                                 *
