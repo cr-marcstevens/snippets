@@ -39,8 +39,8 @@
 #include <set>
 #include <map>
 
-/* example usage *\
-grep "^int main" program_options.hpp -B3 -A47 > test.cpp
+/****************************** example usage ************************************\
+grep "^int main" program_options.hpp -B3 -A61 > test.cpp
 g++ -std=c++11 -o test test.cpp
 
 test.cpp:
@@ -57,19 +57,33 @@ int main(int argc, char** argv)
 
 	po::options_description opts("Allowed options");
 	opts.add_options()
-		("help,h", "Show options")
-		("dowork", "Do work")
-		("v", "Verbose")
+		("help,h", "Show options") // short option & long option
+		("dowork", "Do work")      // only long option
+		("v", "Verbose")           // only short option
+
+		// option that takes a string and can be given multiple times, values are automatically stored in inputfiles
 		("inputfile,i", po::value<std::vector<std::string>>(&inputfiles), "Add input file")
+
+		// option that takes a string with a default value of "file.tmp" that is automatically stored in outputfile
 		("outputfile,o", po::value<std::string>(&outputfile)->default_value("file.tmp"), "Set outputfile")
+
+		// options with different integer arguments (with default value and/or store variable)
 		("param1", po::value<unsigned>(), "Param 1")
 		("param2", po::value<int>(&param2)->default_value(-1), "Param 2")
 		("param3", po::value<std::size_t>()->default_value(5), "Param 3")
 		;
 	po::variables_map vm;
+
+	// parse command line
 	po::parsed_options parsed = po::command_line_parser(argc, argv).options(opts).allow_unregistered().allow_positional().run();
+	// store parsed options in vm
 	po::store(parsed, vm);
+	// set default values if option was not given, and store arguments in variables
 	po::notify(vm);
+
+	// simplified interface:
+	// po::store(po::parse_command_line(argc, argv, opts [, allow_unregistered=true[, allow_positional=true]]));
+	// po::notify(vm);
 
 	if (vm.count("help") || (inputfiles.size() == 0 && vm.count("dowork") == 0))
 	{
@@ -95,7 +109,7 @@ int main(int argc, char** argv)
 	return 0;
 }
 
-*/
+\**************************** end example usage **********************************/
 
 namespace program_options {
 
@@ -280,7 +294,7 @@ namespace program_options {
 
 	/* contains option description, link to variable and/or default value, and parsed arguments */
 	struct option_t {
-		std::string shortopt, longopt;
+		std::string shortopt, longopt, name;
 		std::string description;
 		std::shared_ptr<detail::value_base> value;
 		std::vector<std::string> args;
@@ -342,13 +356,14 @@ namespace program_options {
 					throw std::runtime_error("program_options::_add_option: long option has length 1");
 				if (o->shortopt.size() > 1)
 					throw std::runtime_error("program_options::_add_option: short option has length > 1");
+				o->name = o->longopt;
 			}
 			else
 			{
 				if (opt.size() == 1)
-					o->longopt = o->shortopt = opt;
+					o->name = o->shortopt = opt;
 				else
-					o->longopt = opt;
+					o->name = o->longopt = opt;
 			}
 			return o;
 		}
@@ -379,7 +394,7 @@ namespace program_options {
 				if (!_options[i]->shortopt.empty())
 				{
 					left[i] = "  -" + _options[i]->shortopt;
-					if (_options[i]->shortopt != _options[i]->longopt)
+					if (!_options[i]->longopt.empty())
 						left[i] += " [--" + _options[i]->longopt + "]";
 				} else {
 					left[i] = "  --" + _options[i]->longopt;
@@ -512,7 +527,7 @@ namespace program_options {
 			{
 				_vm._options.insert(o);
 				if (o->value.get() != nullptr && o->value->_hasdefaultvalue())
-					_vm[o->longopt]._set(o->value);
+					_vm[o->name]._set(o->value);
 			}
 			for (std::size_t i = 0; i < _argv.size(); ++i)
 			{
@@ -556,12 +571,12 @@ namespace program_options {
 					// option takes an argument
 					if (i+1 >= _argv.size())
 						throw std::runtime_error("Program option missing argument: " + _argv[i]);
-					_vm[o->longopt]._set(o->value)._add(_argv[i+1]);
+					_vm[o->name]._set(o->value)._add(_argv[i+1]);
 					++i;
 					continue;
 				}
 				else
-					_vm[o->longopt];
+					_vm[o->name];
 			}
 			if (!_allow_unregistered && !_vm.unrecognized.empty())
 				throw std::runtime_error("Unrecognized program option: " + _vm.unrecognized[0]);
@@ -570,9 +585,12 @@ namespace program_options {
 			return *this;
 		}
 
+		operator variables_map&() { return _vm; }
 		operator const variables_map&() const { return _vm; }
 
+		variables_map& vm() { return _vm; }
 		const variables_map& vm() const { return _vm; }
+
 		const std::vector<std::string>& unrecognized() const { return _vm.unrecognized; }
 		const std::vector<detail::parser>& positional() const { return _vm.positional; }
 
@@ -584,6 +602,17 @@ namespace program_options {
 		std::vector<std::string> _argv;
 		variables_map _vm;
 	};
+
+	// convenient interface to command_line_parser
+	inline variables_map parse_command_line(int argc, char** argv, const options_description& od, bool allow_unregistered = false, bool allow_positional = false)
+	{
+		command_line_parser parser(argc, argv);
+		if (allow_unregistered)
+			parser.allow_unregistered();
+		if (allow_positional)
+			parser.allow_positional();
+		return std::move(parser.options(od).run().vm());
+	}
 
 	inline void store(const variables_map& src, variables_map& dest)
 	{
@@ -606,12 +635,6 @@ namespace program_options {
 
 	inline void notify(variables_map& vm)
 	{
-		// register options with default values
-		for (auto& o : vm._options)
-		{
-			if (o->value.get() != nullptr && o->value->_hasdefaultvalue())
-				vm[o->longopt]._set(o->value);
-		}
 		// finalize all options
 		// - set default value if option was not otherwise given
 		// - if target variable is given then set it to parsed value
