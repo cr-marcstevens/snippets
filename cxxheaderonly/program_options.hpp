@@ -40,24 +40,29 @@
 #include <map>
 
 /****************************** example usage ************************************\
-grep "^int main" program_options.hpp -B3 -A61 > test.cpp
+grep "^//test.cpp" program_options.hpp -A72 > test.cpp
+grep "^#file.cfg" program_options.hpp -A11 > file.cfg
 g++ -std=c++11 -o test test.cpp
 
-test.cpp:
+//test.cpp:
 #include "program_options.hpp"
+#include <fstream>
 namespace po = program_options;
 
 int main(int argc, char** argv)
 {
 	std::vector<std::string> inputfiles;
-	std::string outputfile;
+	std::string outputfile, configfile = "file.cfg";
 	unsigned param1 = 0;
 	int param2 = 0;
 	std::size_t param3 = 0;
 
-	po::options_description opts("Allowed options");
-	opts.add_options()
+	po::options_description cmdopts("Command line options"), opts("Common options"), cfgopts("Config file options");
+	cmdopts.add_options()
 		("help,h", "Show options") // short option & long option
+		("configfile,f", po::value<std::string>(&configfile), "Set configfile (default: file.cfg)")
+		;
+	opts.add_options()
 		("dowork", "Do work")      // only long option
 		("v", "Verbose")           // only short option
 
@@ -72,22 +77,25 @@ int main(int argc, char** argv)
 		("param2", po::value<int>(&param2)->default_value(-1), "Param 2")
 		("param3", po::value<std::size_t>()->default_value(5), "Param 3")
 		;
+	cmdopts.add(opts);
+	cfgopts.add(opts);
 	po::variables_map vm;
 
+	bool allow_unregistered = true, allow_positional = true;
 	// parse command line
-	po::parsed_options parsed = po::command_line_parser(argc, argv).options(opts).allow_unregistered().allow_positional().run();
-	// store parsed options in vm
-	po::store(parsed, vm);
+	po::store(po::parse_command_line(argc, argv, cmdopts, allow_unregistered, allow_positional), vm);
+	// optional: parse configuration file
+	if (!configfile.empty())
+	{
+		std::ifstream is(configfile.c_str());
+		po::store(po::parse_config_file(is, cfgopts, allow_unregistered), vm);
+	}
 	// set default values if option was not given, and store arguments in variables
 	po::notify(vm);
 
-	// simplified interface:
-	// po::store(po::parse_command_line(argc, argv, opts [, allow_unregistered=true[, allow_positional=true]]));
-	// po::notify(vm);
-
 	if (vm.count("help") || (inputfiles.size() == 0 && vm.count("dowork") == 0))
 	{
-		std::cout << opts;
+		std::cout << cmdopts;
 		return 0;
 	}
 	if (vm.count("dowork"))
@@ -108,6 +116,19 @@ int main(int argc, char** argv)
 		std::cout << "positional argument: " << positional_argument.as<std::string>() << std::endl;
 	return 0;
 }
+
+#file.cfg:
+# comments are ignored, whitespace is trimmed
+# format is longopt=argument or just longopt
+dowork
+inputfile = file.1
+inputfile = file.2
+param3    = 6
+# sections: all following options are prefixed with "sectionname."
+[section1]
+dowork     # section1.dowork
+[section2.subsection3]
+param2=5   # section2.subsection3.param2=5
 
 \**************************** end example usage **********************************/
 
@@ -228,6 +249,8 @@ namespace program_options {
 			parser& _add(const std::string& val)
 			{
 				_values.emplace_back(val);
+				if (_target.get() != nullptr)
+					_target->_parse(*this);
 				return *this;
 			}
 
@@ -247,6 +270,17 @@ namespace program_options {
 			std::shared_ptr<value_base> _target;
 		};
 
+		void trim(std::string& str)
+		{
+			// trim left
+			std::size_t pos = 0;
+			while (pos < str.size() && std::isspace(str[pos]))
+				++pos;
+			str.erase(0, pos);
+			// trim right
+			while (!str.empty() && std::isspace(str.back()))
+				str.pop_back();
+		}
 
 	}
 
@@ -292,12 +326,11 @@ namespace program_options {
 		std::shared_ptr<Type> _defaultvalue;
 	};
 
-	/* contains option description, link to variable and/or default value, and parsed arguments */
+	/* contains option description and optional value specific behaviour: target variable and/or default value */
 	struct option_t {
 		std::string shortopt, longopt, name;
 		std::string description;
 		std::shared_ptr<detail::value_base> value;
-		std::vector<std::string> args;
 	};
 	typedef std::shared_ptr<option_t> option;
 
@@ -320,11 +353,17 @@ namespace program_options {
 		class add_options_t {
 		public:
 			add_options_t(options_description& parent): _parent(parent) {}
+			// register option without argument
+			// option = "s,long" OR "long,s" OR "s" OR "long" for short option '-s' and/or long option '--long'
+			// description = option description (can contain '\n' and '\t' for formatting)
 			inline add_options_t operator()(const std::string& option, const std::string& description)
 			{
 				_parent._add_option(option, description);
 				return *this;
 			}
+			// register option with argument of type Type
+			// when Type==std::vector<value_type> then register repeatable option with argument of type Type::value_type
+			// use value<Type>->default_value(val) to register argument with a default value
 			template<typename Type>
 			inline add_options_t operator()(const std::string& option, value<Type> val, const std::string& description)
 			{
@@ -334,7 +373,7 @@ namespace program_options {
 		private:
 			options_description& _parent;
 		};
-		inline add_options_t add_options()
+		add_options_t add_options()
 		{
 			return add_options_t(*this);
 		}
@@ -367,7 +406,6 @@ namespace program_options {
 			}
 			return o;
 		}
-
 		template<typename Type>
 		void _add_option(const std::string& opt, value<Type> val, const std::string& description)
 		{
@@ -375,6 +413,7 @@ namespace program_options {
 			o->value.reset(new value<Type>(val));
 		}
 
+		/* add options from another options_description */
 		options_description& add(const options_description& od)
 		{
 			for (auto& o : od._options)
@@ -382,6 +421,7 @@ namespace program_options {
 			return *this;
 		}
 
+		/* print options to outputstream, called from operator<<(ostream&,const options_description&) */
 		void _print(std::ostream& o)
 		{
 			if (!_description.empty())
@@ -460,26 +500,20 @@ namespace program_options {
 		unsigned _linelength, _mindesclength;
 	};
 
-	/* stores a map of parsed longoption => parser */
+	/* stores a map of parsed option.name => parser, as well as unrecognized options, positional arguments */
 	struct variables_map
 		: public std::map<std::string, detail::parser>
 	{
 		std::vector<std::string> unrecognized;
 		std::vector<detail::parser> positional;
-		std::set<option> _options;
 	};
 	using parsed_options = variables_map;
 
-	/* the main parser: commandline parser */
+	/* the main parser: command line parser */
 	class command_line_parser {
 	public:
-		command_line_parser()
-			: _allow_unregistered(false), _allow_positional(false)
-		{
-		}
-
-		command_line_parser(int argc, char** argv)
-			: _allow_unregistered(false), _allow_positional(false)
+		command_line_parser(int argc, char** argv, bool allow_unregistered = false, bool allow_positional = false)
+			: _allow_unregistered(allow_unregistered), _allow_positional(allow_positional)
 		{
 			if (argc < 1) throw;
 			_argv.resize(argc-1);
@@ -496,13 +530,13 @@ namespace program_options {
 				if (!o->shortopt.empty())
 				{
 					if (_shortopts.count(o->shortopt))
-						throw std::runtime_error("program_options::parsed_options: shortoption defined twice");
+						throw std::runtime_error("program_options::command_line_parser: shortoption defined twice");
 					_shortopts[o->shortopt] = o;
 				}
 				if (!o->longopt.empty())
 				{
 					if (_longopts.count(o->longopt))
-						throw std::runtime_error("program_options::parsed_options: longoption defined twice");
+						throw std::runtime_error("program_options::command_line_parser: longoption defined twice");
 					_longopts[o->longopt] = o;
 				}
 			}
@@ -523,9 +557,9 @@ namespace program_options {
 		command_line_parser& run()
 		{
 			_vm = variables_map();
+			// preregister options with default values
 			for (auto o : _options)
 			{
-				_vm._options.insert(o);
 				if (o->value.get() != nullptr && o->value->_hasdefaultvalue())
 					_vm[o->name]._set(o->value);
 			}
@@ -597,8 +631,8 @@ namespace program_options {
 	private:
 		bool _allow_unregistered, _allow_positional;
 		std::vector<option> _options;
-		std::map< std::string, option> _shortopts;
-		std::map< std::string, option> _longopts;
+		std::map<std::string, option> _shortopts;
+		std::map<std::string, option> _longopts;
 		std::vector<std::string> _argv;
 		variables_map _vm;
 	};
@@ -606,19 +640,148 @@ namespace program_options {
 	// convenient interface to command_line_parser
 	inline variables_map parse_command_line(int argc, char** argv, const options_description& od, bool allow_unregistered = false, bool allow_positional = false)
 	{
-		command_line_parser parser(argc, argv);
-		if (allow_unregistered)
-			parser.allow_unregistered();
-		if (allow_positional)
-			parser.allow_positional();
-		return std::move(parser.options(od).run().vm());
+		return std::move(command_line_parser(argc, argv, allow_unregistered, allow_positional).options(od).run().vm());
 	}
 
+	/* a configuration file parser */
+	class config_file_parser {
+	public:
+		config_file_parser(std::istream& is, bool allow_unregistered = false)
+			: _is(is), _allow_unregistered(allow_unregistered)
+		{
+		}
+
+		config_file_parser& options(const options_description& od)
+		{
+			for (std::size_t i = 0; i < od._options.size(); ++i)
+			{
+				_options.emplace_back(od._options[i]);
+				option o = _options.back();
+				if (!o->shortopt.empty())
+				{
+					if (_shortopts.count(o->shortopt))
+						throw std::runtime_error("program_options::config_file_parser: shortoption defined twice");
+					_shortopts[o->shortopt] = o;
+				}
+				if (!o->longopt.empty())
+				{
+					if (_longopts.count(o->longopt))
+						throw std::runtime_error("program_options::config_file_parser: longoption defined twice");
+					_longopts[o->longopt] = o;
+				}
+			}
+			return *this;
+		}
+
+		config_file_parser& allow_unregistered()
+		{
+			_allow_unregistered = true;
+			return *this;
+		}
+
+		config_file_parser& run()
+		{
+			_vm = variables_map();
+			// preregister options with default values
+			for (auto o : _options)
+			{
+				if (o->value.get() != nullptr && o->value->_hasdefaultvalue())
+					_vm[o->name]._set(o->value);
+			}
+			std::string line;
+			std::string sectionname;
+			while (!!_is)
+			{
+				std::getline(_is, line);
+				// remove comments & trim whitespace
+				std::size_t pos = line.find('#');
+				if (pos < line.size())
+					line.erase(pos);
+				detail::trim(line);
+				if (line.empty())
+					continue;
+
+				// split line into longopt and argument
+				std::string longopt, argument;
+				pos = line.find('=');
+				if (pos < line.size())
+				{
+					longopt = line.substr(0, pos);
+					argument = line.substr(pos+1);
+				}
+				else
+					longopt = line;
+				detail::trim(longopt);
+				detail::trim(argument);
+				if (longopt.empty())
+					throw std::runtime_error("Configuration file option unspecified: " + line);
+				// check for definition of section
+				if (argument.empty() && longopt.size() > 2 && longopt.front()=='[' && longopt.back()==']')
+				{
+					sectionname = longopt.substr(1, longopt.size()-2);
+					detail::trim(sectionname);
+					continue;
+				}
+				// prefix optional sectionname to optionname
+				if (!sectionname.empty())
+					longopt = sectionname + "." + longopt;
+				// check for registered long option
+				auto it = _longopts.find(longopt);
+				if (it == _longopts.end())
+				{
+					if (argument.empty())
+						_vm.unrecognized.emplace_back("--" + longopt);
+					else
+						_vm.unrecognized.emplace_back("--" + longopt + "=" + argument);
+					continue;
+				}
+				option o = it->second;
+				if (o->value.get() != nullptr)
+				{
+					// option takes an argument
+					if (argument.empty())
+						throw std::runtime_error("Configuration file option missing argument: " + longopt);
+					_vm[o->name]._set(o->value)._add(argument);
+				}
+				else
+					_vm[o->name];
+			}
+			if (!_allow_unregistered && !_vm.unrecognized.empty())
+				throw std::runtime_error("Unrecognized configuration file option: " + _vm.unrecognized[0]);
+			return *this;
+		}
+
+		operator variables_map&() { return _vm; }
+		operator const variables_map&() const { return _vm; }
+
+		variables_map& vm() { return _vm; }
+		const variables_map& vm() const { return _vm; }
+
+		const std::vector<std::string>& unrecognized() const { return _vm.unrecognized; }
+
+	private:
+		bool _allow_unregistered;
+		std::istream& _is;
+		std::vector<option> _options;
+		std::map<std::string, option> _shortopts;
+		std::map<std::string, option> _longopts;
+		std::vector<std::string> _argv;
+		variables_map _vm;
+	};
+
+	// convenient interface to config_file_parser
+	inline variables_map parse_config_file(std::istream& is, const options_description& od, bool allow_unregistered = false)
+	{
+		return std::move(config_file_parser(is, allow_unregistered).options(od).run().vm());
+	}
+
+	// store parsed options from src into dest
+	// arguments are appended, not overwritten
+	// thus for options that can be given once the first stored argument is used
+	// and for options that can be given multiple times the argument lists are concatenated
 	inline void store(const variables_map& src, variables_map& dest)
 	{
 		// append values in src to dest
-		for (auto& o : src._options)
-			dest._options.insert(o);
 		for (auto& l_p : src)
 		{
 			if (dest.count(l_p.first))
@@ -633,11 +796,11 @@ namespace program_options {
 			dest.positional.emplace_back(s);
 	}
 
+	// finalize all options
+	// - set default value if option was not otherwise given
+	// - if target variable is given then set it to parsed value
 	inline void notify(variables_map& vm)
 	{
-		// finalize all options
-		// - set default value if option was not otherwise given
-		// - if target variable is given then set it to parsed value
 		for (auto& l_p : vm)
 			l_p.second._finalize();
 	}
@@ -645,13 +808,11 @@ namespace program_options {
 } // namespace program_options
 
 namespace std {
-
 	std::ostream& operator<<(std::ostream& o, program_options::options_description& op)
 	{
 		op._print(o);
 		return o;
 	}
-
 } // namespace std
 
 #endif // PROGRAM_OPTIONS_HPP
