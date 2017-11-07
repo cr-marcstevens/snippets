@@ -34,10 +34,11 @@
 #include <iostream>
 #include <sstream>
 #include <vector>
+#include <set>
 #include <map>
 
 /* example usage *\
-grep "^int main" program_options.hpp -B3 -A45 > test.cpp
+grep "^int main" program_options.hpp -B3 -A47 > test.cpp
 g++ -std=c++11 -o test test.cpp
 
 test.cpp:
@@ -66,7 +67,9 @@ int main(int argc, char** argv)
 	po::variables_map vm;
 	po::parsed_options parsed = po::command_line_parser(argc, argv).options(opts).allow_unregistered().allow_positional().run();
 	po::store(parsed, vm);
-	if (vm.count("h") || (inputfiles.size() == 0 && vm.count("dowork") == 0))
+	po::notify(vm);
+
+	if (vm.count("help") || (inputfiles.size() == 0 && vm.count("dowork") == 0))
 	{
 		std::cout << opts;
 		return 0;
@@ -83,9 +86,9 @@ int main(int argc, char** argv)
 		std::cout << "in: " << inputfile << std::endl;
 	std::cout << "out: " << outputfile << std::endl;
 	std::cout << "params: " << param1 << " " << param2 << " " << param3 << std::endl;
-	for (auto& other_option : parsed.unrecognized())
+	for (auto& other_option : vm.unrecognized)
 		std::cout << "unrecognized option: " << other_option << std::endl;
-	for (auto& positional_argument : parsed.positional())
+	for (auto& positional_argument : vm.positional)
 		std::cout << "positional argument: " << positional_argument.as<std::string>() << std::endl;
 	return 0;
 }
@@ -119,73 +122,121 @@ namespace program_options {
 			ret.emplace_back();
 			parse(str, ret.back());
 		}
-		// to_string: like std::to_string, but extend with std::string (passthrough) and std::vector (make list)
+
+		// to_string: like std::to_string but outputs a stack of strings
+		// extended with std::string (passthrough) and std::vector (make list)
+		std::vector<std::string> to_string(const std::string& t)
+		{
+			return std::vector<std::string>(1,t);
+		}
+		std::vector<std::string> to_string(const std::vector<std::string>& vs)
+		{
+			return vs;
+		}
 		template<typename Type>
-		std::string to_string(const Type& t)
+		std::vector<std::string> to_string(const Type& t)
 		{
 			std::stringstream strstr;
 			strstr << t;
-			return strstr.str();
-		}
-		std::string to_string(const std::string& t)
-		{
-			return t;
+			return std::vector<std::string>(1,strstr.str());
 		}
 		template<typename Type, typename A>
-		std::string to_string(const std::vector<Type,A>& v)
+		std::vector<std::string> to_string(const std::vector<Type,A>& vs)
 		{
-			std::string ret = "[";
-			if (!v.empty())
-				ret = ret + to_string(v[0]);
-			for (std::size_t i = 1; i < v.size(); ++i)
-				ret = ret + ","  + to_string(v[i]);
-			return ret + "]";
-		}
-	}
-
-	/* parser class is initialized with a string, parses it to a type on demand via 'as<type>()' and 'to(var)' */
-	class parser {
-	public:
-		parser() {}
-		parser(const std::string& val) : _val(val) {}
-
-		template<typename Type>
-		Type as() const
-		{
-			Type ret;
-			detail::parse(_val, ret);
+			std::vector<std::string> ret;
+			for (auto& v : vs)
+			{
+				std::vector<std::string> tmp = to_string(v);
+				for (std::size_t i = 0; i < tmp.size(); ++i)
+					ret.emplace_back(std::move(tmp[i]));
+			}
 			return ret;
 		}
 
-		template<typename Type>
-		void to(Type& target) const
-		{
-			detail::parse(_val, target);
-		}
+		/* base interface to wrapper around variables and default values */
+		class parser;
+		class value_base {
+		public:
+			virtual ~value_base() {}
+			virtual std::vector<std::string> _defaultvaluestr() = 0;
+			virtual void _parse(const parser& arg) = 0;
+		};
 
-		const std::string& val() const { return _val; }
-	private:
-		std::string _val;
-	};
+		/* parser class contains a stack of strings
+		   parses each to a type on demand via 'as<type>()' and 'to(var)'
+		   use pop_front() and empty() to safely traverse stack */
+		class parser {
+		public:
+			bool empty() const
+			{
+				return _values.empty();
+			}
 
-	/* stores a map of parsed longoption => parser(arg) */
-	struct variables_map 
-		: public std::map<std::string, parser>
-	{
-	};
+			template<typename Type>
+			Type as() const
+			{
+				if (empty())
+					throw std::runtime_error("program_options::detail::parser::as(): parsing empty value");
+				Type ret;
+				parse(_values.front(), ret);
+				return ret;
+			}
 
-	/* base interface to wrapper around variables and default values */
-	class value_base {
-	public:
-		virtual ~value_base() {}
-		virtual std::string _defaultvaluestr() = 0;
-		virtual void _parse(const std::string& arg) = 0;
-	};
+			template<typename Type>
+			void to(Type& target) const
+			{
+				if (empty())
+					throw std::runtime_error("program_options::detail::parser::to(): parsing empty value");
+				parse(_values.front(), target);
+			}
+
+			template<typename Type, typename A>
+			void to(std::vector<Type,A>& target) const
+			{
+				target.resize(_values.size());
+				for (std::size_t i = 0; i < _values.size(); ++i)
+					parse(_values[i], target[i]);
+			}
+
+			void pop_front()
+			{
+				_values.erase(_values.begin());
+			}
+
+			parser& _set(std::shared_ptr<value_base> target)
+			{
+				_target = target;
+				return *this;
+			}
+			parser& _add(const std::string& val)
+			{
+				_values.emplace_back(val);
+				return *this;
+			}
+
+			void _finalize()
+			{
+				if (_target.get() != nullptr)
+				{
+					if (_values.empty())
+						_values = _target->_defaultvaluestr();
+					_target->_parse(*this);
+				}
+			}
+
+			const std::vector<std::string>& values() const { return _values; }
+		private:
+			std::vector<std::string> _values;
+			std::shared_ptr<value_base> _target;
+		};
+
+
+	}
 
 	/* wrapper around variables and default values */
 	template<typename Type>
 	class value
-		: public value_base
+		: public detail::value_base
 	{
 	public:
 		value(): _target(nullptr) {}
@@ -202,21 +253,19 @@ namespace program_options {
 			return *this;
 		}
 
-		virtual std::string _defaultvaluestr()
+		virtual std::vector<std::string> _defaultvaluestr()
 		{
 			if (_defaultvalue.get() != nullptr)
 				return detail::to_string(*_defaultvalue);
-			return std::string();
+			return std::vector<std::string>();
 		}
 
-		virtual void _parse(const std::string& arg)
+		virtual void _parse(const detail::parser& arg)
 		{
 			if (_target != nullptr)
-			{
-				parser tmp(arg);
-				tmp.to(*_target);
-			}
+				arg.to(*_target);
 		}
+
 	private:
 		Type* _target;
 		std::shared_ptr<Type> _defaultvalue;
@@ -226,9 +275,10 @@ namespace program_options {
 	struct option_t {
 		std::string shortopt, longopt;
 		std::string description;
-		std::shared_ptr<value_base> value;
+		std::shared_ptr<detail::value_base> value;
 		std::vector<std::string> args;
 	};
+	typedef std::shared_ptr<option_t> option;
 
 	/* contains all options descriptions, and contains logic to print help screen */
 	class options_description {
@@ -268,38 +318,39 @@ namespace program_options {
 			return add_options_t(*this);
 		}
 
-		option_t& _add_option(const std::string& option, const std::string& description)
+		option _add_option(const std::string& opt, const std::string& description)
 		{
-			_options.emplace_back();
-			option_t& o(_options.back());
-			o.description = description;
-			std::size_t pos = option.find(',');
-			if (pos < option.size())
+			option o(new option_t());
+			_options.emplace_back(o);
+
+			o->description = description;
+			std::size_t pos = opt.find(',');
+			if (pos < opt.size())
 			{
-				o.longopt = option.substr(0, pos);
-				o.shortopt = option.substr(pos+1);
-				if (o.longopt.size() == 1)
-					std::swap(o.longopt,o.shortopt);
-				if (o.longopt.size() == 1)
+				o->longopt = opt.substr(0, pos);
+				o->shortopt = opt.substr(pos+1);
+				if (o->longopt.size() == 1)
+					std::swap(o->longopt,o->shortopt);
+				if (o->longopt.size() == 1)
 					throw std::runtime_error("program_options::_add_option: long option has length 1");
-				if (o.shortopt.size() > 1)
+				if (o->shortopt.size() > 1)
 					throw std::runtime_error("program_options::_add_option: short option has length > 1");
 			}
 			else
 			{
-				if (option.size() == 1)
-					o.longopt = o.shortopt = option;
+				if (opt.size() == 1)
+					o->longopt = o->shortopt = opt;
 				else
-					o.longopt = option;
+					o->longopt = opt;
 			}
 			return o;
 		}
 
 		template<typename Type>
-		void _add_option(const std::string& option, value<Type> val, const std::string& description)
+		void _add_option(const std::string& opt, value<Type> val, const std::string& description)
 		{
-			option_t& o = _add_option(option, description);
-			o.value.reset(new value<Type>(val));
+			option o = _add_option(opt, description);
+			o->value.reset(new value<Type>(val));
 		}
 
 		options_description& add(const options_description& od)
@@ -317,22 +368,26 @@ namespace program_options {
 			unsigned maxleft = 0;
 			for (std::size_t i = 0; i < _options.size(); ++i)
 			{
-				right[i] = _options[i].description;
-				if (!_options[i].shortopt.empty())
+				right[i] = _options[i]->description;
+				if (!_options[i]->shortopt.empty())
 				{
-					left[i] = "  -" + _options[i].shortopt;
-					if (!_options[i].longopt.empty())
-						left[i] = left[i] + " [--" + _options[i].longopt + "]";
+					left[i] = "  -" + _options[i]->shortopt;
+					if (_options[i]->shortopt != _options[i]->longopt)
+						left[i] += " [--" + _options[i]->longopt + "]";
 				} else {
-					left[i] = "  --" + _options[i].longopt;
+					left[i] = "  --" + _options[i]->longopt;
 				}
-				if (_options[i].value.get() != nullptr)
+				if (_options[i]->value.get() != nullptr)
 				{
-					std::string defval = _options[i].value->_defaultvaluestr();
-					if (defval.empty())
-						left[i] = left[i] + " arg";
-					else
-						left[i] = left[i] + " arg (=" + defval + ")";
+					std::vector<std::string> defval = _options[i]->value->_defaultvaluestr();
+					left[i] += " arg";
+					if (!defval.empty())
+					{
+						left[i] += " (=" + defval[0];
+						for (std::size_t j = 1 ; j < defval.size(); ++j)
+							left[i] += "," + defval[j];
+						left[i] += ")";
+					}
 				}
 				if (left[i].size() > maxleft)
 					maxleft = left[i].size();
@@ -341,7 +396,7 @@ namespace program_options {
 				maxleft = _linelength - _mindesclength - 2;
 			if (maxleft < (_linelength>>2))
 				maxleft = _linelength>>2;
-			for (std::size_t i = 0; i < _options.size(); ++i)
+			for (std::size_t i = 0; i < left.size(); ++i)
 			{
 				// print left side
 				if (left[i].size() <= maxleft)
@@ -379,11 +434,20 @@ namespace program_options {
 		}
 
 		std::string _description;
-		std::vector< option_t > _options;
+		std::vector<option> _options;
 		unsigned _linelength, _mindesclength;
 	};
 
-	/* the main parser */
+	/* stores a map of parsed longoption => parser */
+	struct variables_map
+		: public std::map<std::string, detail::parser>
+	{
+		std::vector<std::string> unrecognized;
+		std::vector<detail::parser> positional;
+		std::set<option> _options;
+	};
+
+	/* the main parser: commandline parser */
 	class parsed_options {
 	public:
 		parsed_options()
@@ -405,18 +469,18 @@ namespace program_options {
 			for (std::size_t i = 0; i < od._options.size(); ++i)
 			{
 				_options.emplace_back(od._options[i]);
-				option_t& o = _options.back();
-				if (!o.shortopt.empty())
+				option o = _options.back();
+				if (!o->shortopt.empty())
 				{
-					if (_shortopts.count(o.shortopt))
+					if (_shortopts.count(o->shortopt))
 						throw std::runtime_error("program_options::parsed_options: shortoption defined twice");
-					_shortopts[o.shortopt] = o;
+					_shortopts[o->shortopt] = o;
 				}
-				if (!o.longopt.empty())
+				if (!o->longopt.empty())
 				{
-					if (_longopts.count(o.longopt))
+					if (_longopts.count(o->longopt))
 						throw std::runtime_error("program_options::parsed_options: longoption defined twice");
-					_longopts[o.longopt] = o;
+					_longopts[o->longopt] = o;
 				}
 			}
 			return *this;
@@ -435,41 +499,43 @@ namespace program_options {
 
 		parsed_options& run()
 		{
-			_vm.clear();
+			_vm = variables_map();
+			for (auto o : _options)
+				_vm._options.insert(o);
 			for (std::size_t i = 0; i < _argv.size(); ++i)
 			{
 				if (_argv[i] == "--")
 				{
 					// end of options: consider all remaining arguments positional
 					for (std::size_t j = i+1; j < _argv.size(); ++j)
-						_positional.emplace_back(_argv[j]);
+						_vm.positional.emplace_back(detail::parser()._add(_argv[j]));
 					break;
 				}
-				option_t* o = nullptr;
+				option o;
 				if (_argv[i].size() == 2 && _argv[i][0] =='-' && _argv[i][1] != '-')
 				{
 					// check for registered short option
 					auto it = _shortopts.find(_argv[i].substr(1,1));
 					if (it == _shortopts.end())
 					{
-						_unrecognized.emplace_back(_argv[i]);
+						_vm.unrecognized.emplace_back(_argv[i]);
 						continue;
 					}
-					o = & it->second;
+					o = it->second;
 				} else if (_argv[i].size() >= 3 && _argv[i][0] == '-' && _argv[i][1] == '-')
 				{
 					// check for registered long option
 					auto it = _longopts.find(_argv[i].substr(2));
 					if (it == _longopts.end())
 					{
-						_unrecognized.emplace_back(_argv[i]);
+						_vm.unrecognized.emplace_back(_argv[i]);
 						continue;
 					}
-					o = & it->second;
+					o = it->second;
 				} else
 				{
 					// not an option => positional argument
-					_positional.emplace_back(_argv[i]);
+					_vm.positional.emplace_back(detail::parser()._add(_argv[i]));
 					continue;
 				}
 				// continue processing long/short option
@@ -478,55 +544,70 @@ namespace program_options {
 					// option takes an argument
 					if (i+1 >= _argv.size())
 						throw std::runtime_error("Program option missing argument: " + _argv[i]);
-					_vm[o->longopt] = parser(_argv[i+1]);
-					o->value->_parse(_argv[i+1]);
-					++i; 
+					_vm[o->longopt]._set(o->value)._add(_argv[i+1]);
+					++i;
 					continue;
-				} else
-					_vm[o->longopt] = parser();
+				}
+				else
+					_vm[o->longopt];
 			}
-			if (!_allow_unregistered && !_unrecognized.empty())
-				throw std::runtime_error("Unrecognized program option: " + _unrecognized[0]);
-			if (!_allow_positional && !_positional.empty())
-				throw std::runtime_error("Unrecognized program option: " + _positional[0].val());
-			for (auto& o : _options)
-			{
-				if (_vm.count(o.longopt) != 0 || o.value.get() == nullptr)
-					continue;
-				std::string defval = o.value->_defaultvaluestr();
-				if (!defval.empty())
-					_vm[o.longopt] = parser(defval);
-			}
+			if (!_allow_unregistered && !_vm.unrecognized.empty())
+				throw std::runtime_error("Unrecognized program option: " + _vm.unrecognized[0]);
+			if (!_allow_positional && !_vm.positional.empty())
+				throw std::runtime_error("Unrecognized program option: " + _vm.positional[0].values().front());
 			return *this;
 		}		
 
 		const variables_map& vm() const { return _vm; }
-		const std::vector<std::string>& unrecognized() const { return _unrecognized; }
-		const std::vector<parser>& positional() const { return _positional; }
+		const std::vector<std::string>& unrecognized() const { return _vm.unrecognized; }
+		const std::vector<detail::parser>& positional() const { return _vm.positional; }
 
 	private:
 		bool _allow_unregistered, _allow_positional;
-		std::vector< option_t > _options;
-		std::map< std::string, option_t> _shortopts;
-		std::map< std::string, option_t> _longopts;
+		std::vector<option> _options;
+		std::map< std::string, option> _shortopts;
+		std::map< std::string, option> _longopts;
 		std::vector<std::string> _argv;
-		std::vector<parser> _positional;
-		std::vector<std::string> _unrecognized;
 		variables_map _vm;
 	};
 	using command_line_parser = parsed_options;
 
+	inline void store(const variables_map& src, variables_map& dest)
+	{
+		// append values in src to dest
+		for (auto& o : src._options)
+			dest._options.insert(o);
+		for (auto& l_p : src)
+		{
+			if (dest.count(l_p.first))
+				for (auto& s : l_p.second.values())
+					dest[l_p.first]._add(s);
+			else
+				dest.emplace(l_p);
+		}
+		for (auto& s : src.unrecognized)
+			dest.unrecognized.emplace_back(s);
+		for (auto& s : src.positional)
+			dest.positional.emplace_back(s);
+	}
 	inline void store(const parsed_options& po, variables_map& vm)
 	{
-		// for boost::program_options compatibility
-		// simply copy the variables_map from inside parsed_options
-		vm = po.vm();
+		store(po.vm(), vm);
 	}
 
 	inline void notify(variables_map& vm)
 	{
-		// for boost::program_options compatibility
-		// do nothing
+		// register options with default values
+		for (auto& o : vm._options)
+		{
+			if (o->value.get() != nullptr && ! o->value->_defaultvaluestr().empty())
+				vm[o->longopt]._set(o->value);
+		}
+		// finalize all options
+		// - set default value if option was not otherwise given
+		// - if target variable is given then set it to parsed value
+		for (auto& l_p : vm)
+			l_p.second._finalize();
 	}
 
 } // namespace program_options
