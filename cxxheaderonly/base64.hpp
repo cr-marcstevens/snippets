@@ -2,7 +2,7 @@
 *                                                                                 *
 * https://github.com/cr-marcstevens/snippets/tree/master/cxxheaderonly            *
 *                                                                                 *
-* program_options.hpp - A header only C++ boost-like program options class        *
+* base64.hpp - A header only C++ base64 encoder/decoder library                   *
 * Copyright (c) 2017 Marc Stevens                                                 *
 *                                                                                 *
 * MIT License                                                                     *
