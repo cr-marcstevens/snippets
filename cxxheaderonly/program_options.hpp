@@ -38,9 +38,10 @@
 #include <vector>
 #include <set>
 #include <map>
+#include <cctype>
 
 /****************************** example usage ************************************\
-grep "^//test.cpp" program_options.hpp -A72 > test.cpp
+grep "^//test.cpp" program_options.hpp -A74 > test.cpp
 grep "^#file.cfg" program_options.hpp -A11 > file.cfg
 g++ -std=c++11 -o test test.cpp
 
@@ -56,6 +57,7 @@ int main(int argc, char** argv)
 	unsigned param1 = 0;
 	int param2 = 0;
 	std::size_t param3 = 0;
+	bool param4 = false;
 
 	po::options_description cmdopts("Command line options"), opts("Common options"), cfgopts("Config file options");
 	cmdopts.add_options()
@@ -76,6 +78,7 @@ int main(int argc, char** argv)
 		("param1", po::value<unsigned>(), "Param 1")
 		("param2", po::value<int>(&param2)->default_value(-1), "Param 2")
 		("param3", po::value<std::size_t>()->default_value(5), "Param 3")
+		("param4", po::bool_switch(&param4), "Param 4")
 		;
 	cmdopts.add(opts);
 	cfgopts.add(opts);
@@ -109,7 +112,7 @@ int main(int argc, char** argv)
 	for (auto& inputfile : inputfiles)
 		std::cout << "in: " << inputfile << std::endl;
 	std::cout << "out: " << outputfile << std::endl;
-	std::cout << "params: " << param1 << " " << param2 << " " << param3 << std::endl;
+	std::cout << "params: " << param1 << " " << param2 << " " << param3 << " " << param4 << std::endl;
 	for (auto& other_option : vm.unrecognized)
 		std::cout << "unrecognized option: " << other_option << std::endl;
 	for (auto& positional_argument : vm.positional)
@@ -195,6 +198,7 @@ namespace program_options {
 		class value_base {
 		public:
 			virtual ~value_base() {}
+			virtual bool _takesvalue() = 0;
 			virtual bool _hasdefaultvalue() = 0;
 			virtual std::vector<std::string> _defaultvaluestr() = 0;
 			virtual void _parse(const parser& arg) = 0;
@@ -283,6 +287,42 @@ namespace program_options {
 		}
 
 	}
+	/* wrapper for boolean variables without value argument (argument passed or not) */
+	class bool_switch
+		: public detail::value_base
+	{
+	public:
+		bool_switch(): _target(nullptr) {}
+		bool_switch(bool* target): _target(target)
+		{
+			*target = false;
+		}
+		virtual ~bool_switch() {}
+
+		virtual bool _takesvalue()
+		{
+			return false;
+		}
+
+		virtual bool _hasdefaultvalue()
+		{
+			return false;
+		}
+
+		virtual std::vector<std::string> _defaultvaluestr()
+		{
+			return std::vector<std::string>();
+		}
+
+		virtual void _parse(const detail::parser& arg)
+		{
+			if (_target != nullptr)
+				*_target = true;
+		}
+
+	private:
+		bool* _target;
+	};
 
 	/* wrapper around variables and default values */
 	template<typename Type>
@@ -302,6 +342,11 @@ namespace program_options {
 				*_target = defaultvalue;
 			_defaultvalue.reset(new Type(defaultvalue));
 			return *this;
+		}
+
+		virtual bool _takesvalue()
+		{
+			return true;
 		}
 
 		virtual bool _hasdefaultvalue()
@@ -370,6 +415,11 @@ namespace program_options {
 				_parent._add_option(option, val, description);
 				return *this;
 			}
+			inline add_options_t operator()(const std::string& option, bool_switch val, const std::string& description)
+			{
+				_parent._add_option(option, val, description);
+				return *this;
+			}
 		private:
 			options_description& _parent;
 		};
@@ -412,6 +462,11 @@ namespace program_options {
 			option o = _add_option(opt, description);
 			o->value.reset(new value<Type>(val));
 		}
+		void _add_option(const std::string& opt, bool_switch val, const std::string& description)
+		{
+			option o = _add_option(opt, description);
+			o->value.reset(new bool_switch(val));
+		}
 
 		/* add options from another options_description */
 		options_description& add(const options_description& od)
@@ -439,7 +494,7 @@ namespace program_options {
 				} else {
 					left[i] = "  --" + _options[i]->longopt;
 				}
-				if (_options[i]->value.get() != nullptr)
+				if (_options[i]->value.get() != nullptr && _options[i]->value->_takesvalue())
 				{
 					std::vector<std::string> defval = _options[i]->value->_defaultvaluestr();
 					left[i] += " arg";
@@ -476,8 +531,8 @@ namespace program_options {
 						pos = right[i].size();
 					if (pos + maxleft + 2 > _linelength)
 					{
-						std::size_t pos2 = right[i].rfind(' ', pos);
-						if (pos2 > 0 && pos2 < pos)
+						std::size_t pos2 = right[i].rfind(' ', _linelength - maxleft - 2);
+						if (pos2 > 0 && pos2 < pos && pos2 < _linelength - maxleft - 2)
 							pos = pos2;
 						else
 							pos = _linelength - maxleft - 2;
@@ -602,12 +657,16 @@ namespace program_options {
 				// continue processing long/short option
 				if (o->value.get() != nullptr)
 				{
-					// option takes an argument
-					if (i+1 >= _argv.size())
-						throw std::runtime_error("Program option missing argument: " + _argv[i]);
-					_vm[o->name]._set(o->value)._add(_argv[i+1]);
-					++i;
-					continue;
+					if (o->value->_takesvalue())
+					{
+						// option takes an argument
+						if (i+1 >= _argv.size())
+							throw std::runtime_error("Program option missing argument: " + _argv[i]);
+						_vm[o->name]._set(o->value)._add(_argv[i+1]);
+						++i;
+						continue;
+					} else
+						_vm[o->name]._set(o->value)._add("");
 				}
 				else
 					_vm[o->name];
@@ -739,7 +798,7 @@ namespace program_options {
 				if (o->value.get() != nullptr)
 				{
 					// option takes an argument
-					if (argument.empty())
+					if (o->value->_takesvalue() && argument.empty())
 						throw std::runtime_error("Configuration file option missing argument: " + longopt);
 					_vm[o->name]._set(o->value)._add(argument);
 				}
