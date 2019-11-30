@@ -247,13 +247,15 @@ namespace thread_pool {
 		if (nrthreads < _threads.size())
 		{
 			// decreasing number of active threads
+			std::unique_lock<std::mutex> lock(_mutex);
 			for (std::size_t i = nrthreads; i < _threads.size(); ++i)
 				*(_threads_stop[i]) = true;
 			_condition.notify_all();
+			lock.unlock();
 			for (std::size_t i = nrthreads; i < _threads.size(); ++i)
 				_threads[i]->join();
 
-			std::unique_lock<std::mutex> lock(_mutex);
+			lock.lock();
 			_threads_stop.resize(nrthreads);
 			_threads.resize(nrthreads);
 		} 
