@@ -17,8 +17,11 @@ fi
 # print message about ssh-agent and list keys
 ssh-add -l
 
-# if list is empty then add aliases to automatically add keys when first running ssh or scp
-if [ $? -ne 0 ] ; then
-  alias ssh='ssh-add -l > /dev/null || ssh-add && unalias ssh scp ; ssh'
-  alias scp='ssh-add -l > /dev/null || ssh-add && unalias scp ssh ; scp'
+# if not using ssh and list is empty then add aliases to automatically add keys when first running ssh or scp
+if [ -z "$SSH_TTY" ]; then
+  ssh-add -l > /dev/null
+  if [ $? -ne 0 ] ; then
+    alias ssh='ssh-add -l > /dev/null || ssh-add && unalias ssh scp ; ssh'
+    alias scp='ssh-add -l > /dev/null || ssh-add && unalias scp ssh ; scp'
+  fi
 fi
