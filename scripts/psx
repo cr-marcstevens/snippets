@@ -1,0 +1,1466 @@
+#!/usr/bin/perl
+1%1; $xx=<<'_END_PS_';    # Ignore Postscript when executed as perl script
+
+%======================================================================
+% Postscript code (Determine Bounding Box)
+%======================================================================
+
+clear                                         % clear operand stack
+/psxdict 30 dict def                         % local dictionary
+psxdict /print {print} bind put              % protect output commands
+psxdict /== {==} bind put
+psxdict /pagecount 0 put                     % current page number
+psxdict /firstpage (psxfirstpage) getenv not { 1 } if cvi put
+psxdict /lastpage (psxlastpage) getenv not { 999 } if cvi put
+psxdict /debug (psxdebug) getenv not { 0 } if cvi put
+psxdict /ifdebug { debug exch ge exch if } put
+
+%/print {pop} def
+%/== {pop} def
+/DonePage 1 string def
+
+psxdict begin
+  % Convert index/mask to most-left x-position
+  /leftpos
+  { % First find index of most-significant (= left-most) bit
+    0 exch -2  % Stack: idx number 2^(idx+1)-1
+    { 2 copy and 0 eq { exit } if 2 mul 3 -1 roll 1 add 3 1 roll } loop
+    pop pop
+    % Then make index
+    7 exch sub exch 8 mul add
+  } def
+
+  % Convert index/mask to most-right x-position
+  /rightpos
+  { % First find index of least-significant (= right-most) bit
+    0 exch 1  % Stack: idx number 2^idx
+    { 2 copy and 0 ne { exit } if 2 mul 3 -1 roll 1 add 3 1 roll } loop
+    pop pop
+    % Then make index
+    7 exch sub exch 8 mul add
+  } def
+
+  % Return bigger of two numbers
+%  /max { 2 copy le { exch } if pop } def
+
+  % Return smaller of two numbers
+%  /min { 2 copy ge { exch } if pop } def
+
+  /printbin { 2 (          ) cvrs dup length 8 exch sub { (0) print } repeat print } def
+  
+  % Initialize, and redefine copypage and showpage.
+  /psxinit
+  { % Get dimension of default device (devwidth and devhight)
+    currentdevice getdeviceprops .dicttomark
+    /HWSize get aload pop /devheight exch def /devwidth exch def
+    matrix defaultmatrix /devmatrix exch def
+
+    { (Scanning area: ) print devwidth (      ) cvs print
+      (x) print devheight (      ) cvs print (\n) print flush
+    } 1 ifdebug
+
+    % Make a corresponding memory device arraydevice, set as default
+    devmatrix devwidth devheight <ff 00> makeimagedevice
+    /arraydevice exch def
+    arraydevice setdevice       % (does an erasepage)
+
+    % prepare string for holding one line (with ceil(devwidth/8) chars)
+    /rowwidth devwidth 7 add 8 idiv def
+    /row rowwidth string def
+
+    % replace the definition of showpage
+    userdict /showpage
+    { psxdict begin
+        /pagecount pagecount 1 add def
+        pagecount firstpage ge { getbbpage } if
+        pagecount lastpage ge {0 0 .quit} if
+      end
+    } bind put
+  } def
+
+  % Scan for left and right margins
+  % Input: row (string)
+  % Output: left leftmask right rightmask true
+  % Or (empty): false
+  /getmargins
+  { % get first non-zero column
+    % Stack: row
+    dup false 0 1 4 -1 roll length 1 sub
+    { % Stack: row false column
+      3 copy exch pop get dup 0 ne { 3 -1 roll pop true exit } if
+      pop pop
+    } for
+    % Stack either: row false, Or: row index val true
+    { 3 -1 roll
+      % Stack: left leftmask row
+      dup length 1 sub -1 0
+      { % Stack: left leftmask row index
+        2 copy get dup 0 ne { exit } if pop pop
+      } for
+      % Stack: left leftmask right rightmask row
+      3 -1 roll pop
+      true
+    }
+    { pop false
+    } ifelse
+  } def
+
+  /getbbpage
+  { { (\n=======================\nPage ) print
+      pagecount (    ) cvs print
+      (\n-----------------------\n) print
+    } 2 ifdebug
+
+    /llx 9999 def /llxb 0 def /lly 9999 def /urx -1 def /urxb 0 def /ury -1 def
+    devheight 1 sub -1 1
+    { % Stack: rownr
+      % get row string
+      dup devheight exch sub arraydevice exch row copyscanlines
+      % Stack: rownr row
+      getmargins
+      % Stack: rownr left leftmask right rightmask true; OR: rownr false
+      {
+        { 5 copy 5 -1 roll (Scanline ) print (    ) cvs print (: ) print
+          4 -2 roll 2 copy exch (    ) cvs print (:) print printbin ( / ) print
+          leftpos (    ) cvs print ( - ) print 2 copy exch (    ) cvs print
+          (:) print printbin ( / ) print rightpos (    ) cvs print (\n) print
+          true
+        }
+        { (Scanline ) print dup (    ) cvs print (: empty\n) print false
+        } ifelse
+      } 2 ifdebug
+      { % Check whether right border is new max
+        exch dup urx ge
+        { dup urx eq exch /urx exch def { urxb or } if /urxb exch def }
+        { pop pop }
+        ifelse
+        % Check whether left broder is new min
+        exch dup llx le
+        { dup llx eq     % Stack: rownr row val index bool
+          exch /llx exch def { llxb or } if /llxb exch def
+        }
+        { pop pop }
+        ifelse
+        % Stack: rownr
+        % Check if first/last line on page
+        dup ury max /ury exch def lly min /lly exch def
+      }
+      { pop }
+      ifelse
+    } for
+    { (  llx: ) print llx (     ) cvs print (:) print llxb printbin
+      (  lly: ) print lly (     ) cvs print
+      (  urx: ) print urx (     ) cvs print (:) print urxb printbin
+      (  ury: ) print ury (     ) cvs print
+      (\n) print
+    } 2 ifdebug
+    (Page ) print pagecount (    ) cvs print (: ) print
+    urx 0 ge   % page is not empty
+    { /llx llx llxb leftpos def
+      /urx urx urxb rightpos def
+      llx (     ) cvs print ( ) print
+      lly (     ) cvs print ( ) print
+      urx (     ) cvs print ( ) print
+      ury (     ) cvs print
+      }
+    { (empty) print }
+    ifelse
+    (\n) print flush
+
+    erasepage initgraphics
+    DonePage 0 1 put
+
+  } bind def
+end
+
+psxdict begin
+  psxinit
+end
+(%stdin) (r) file cvx execute0
+psxdict begin
+  DonePage 0 get 0 eq { showpage } if  % show last page
+end
+quit
+
+_END_PS_
+
+
+#======================================================================
+# Perl Code (Main Program)
+#======================================================================
+
+# General Subroutines -------------------------------------------------
+
+# Read variables after __DATA__, introduced with "### varname"
+sub readdatavars
+{ *var=\$_;
+  while (<DATA>) { *var=\$$1,$_="" if /^###\s+(\S+)/; $var.=$_; }
+}
+
+# Read command line options -> Hash
+sub readargs
+{ my(%h,$opt,$pat);
+  my @files = ();
+  while (@ARGV)
+  { $opt = shift(@ARGV);
+    if ($opt !~ /^-./) { push(@files,$opt); next; }
+    if ($opt eq "--") { push(@files,@ARGV); last; }
+    foreach (($opt=~/^--/)?($'):split("",substr($opt,1)))
+    { if    (/^h(elp)?$/)
+        { $h{help}=1; }
+      elsif (/^copies(=(.*))?$/)
+        { $h{copies} = defined($1)?$2:shift(@ARGV); }
+      elsif (/^x(=(0|1))?$/)
+        { $h{x}=defined($1)?$2:1; }
+      elsif (/^(1|2|4|8|16|6)$/)
+        { $h{nup}=($& eq "6")?16:$&; }
+      elsif (/^s(cale)?(=(.*))?$/)
+        { parsescale($h{scale} = defined($2)?$3:shift(@ARGV)); }
+      elsif (/^m(ax)?(=(0|1))?$/)
+        { parsescale($h{scale}=($3 eq "0")?undef:"max"); }
+      elsif (/^b(order)?(=(.*))?$/)
+        { parseborder($h{border}=defined($2)?$3:1);}
+      elsif (/^P(=(.*))?$/)
+        { $h{printer}=defined($1)?$2:shift(@ARGV); $h{outfile}=undef; }
+      elsif (/^o(=(.*))?$/)
+        { $h{outfile}=defined($1)?$2:shift(@ARGV); $h{printer}=undef;}
+      elsif (/^d(ebug)?(=(\d))?$/)
+        { $h{debug}=defined($2)?$3:$h{debug}+1; }
+      elsif (/^v(erbose)?(=(\d))?$/)
+        { $h{verbose}=defined($2)?$3:$h{verbose}+1; }
+      elsif (/^(pp|pages)(=(.*))?$/)
+        { parsepp($h{pages} = defined($2)?$3:shift(@ARGV)); }
+      elsif (/^book(let)?(=(0|1))?$/)
+        { $h{book}=defined($2)?$3:1; $h{nup}=2; }
+      elsif (/^layout(=([tb][lr]|[lr][tb])?)?$/)
+        { parselayout($h{layout}=defined($1)?$2:shift(@ARGV)); }
+      elsif (/^flip(=(0|1|a|auto))?$/)
+        { $h{flip}=defined($1)?$2:1; }
+      elsif (/^landscape(=(0|1|a|auto))?$/)
+        { $h{landscape}=defined($1)?$2:1; }
+      elsif (/^trim(=(0|1))?$/)
+        { $h{trim}=defined($1)?$2:1; }
+      elsif (/^number(=(\d+))?$/)
+        { $h{number}=defined($1)?$2:1; }
+      elsif (/^raster(ize)?(=(0|1))?$/)
+        { $h{raster}=defined($2)?$3:1; }
+      elsif (/^antishittex(=(0|1))?$/)
+        { $h{antishittex}=defined($1)?$2:1; }
+      elsif (/^antisoffice(=(0|1))?$/)
+        { $h{antisoffice}=defined($1)?$2:1; }
+      elsif (/^antiacro(=(0|1))?$/)
+        { $h{antiacro}=defined($1)?$2:1; }
+      elsif (/^(duplex)(=(0|1)?)?$/)
+        { $h{duplex}=defined($2)?$3:1; }
+      elsif (/^tumble(=(0|1|a|auto))?$/)
+        { $h{tumble}=defined($1)?$2:1; }
+      elsif (/^tray(=(\d))?$/)
+        { $h{tray}=defined($1)?$2:shift(@ARGV); }
+      elsif (/^(staple)(=(0|1)?)?$/)
+        { $h{staple}=defined($2)?$3:1; }
+      elsif (/^margins?(=(.*))?$/)
+        { parsemargin($h{margin} = defined($1)?$2:shift(@ARGV)); }
+      elsif (/^innermargins?(=(.*))?$/)
+        { parsemargin($h{innermargin} = defined($1)?$2:shift(@ARGV)); }
+      elsif (/^(bb|boundingbox)(=(.*))?$/)
+        { parsebb($h{bb} = defined($2)?$3
+                             :($ARGV[0]!~/^\s*\d+\s*$/)?shift(@ARGV)
+                             :join(" ",splice(@ARGV,0,4)));
+        }
+      elsif (/^(bbp|bbpages)(=(.*))?$/)
+        { parsepp($h{bbpages} = defined($2)?$3:shift(@ARGV)); }
+      elsif (/^bbmulti(=(\d+)?)?$/)
+        { $h{bbmod} = defined($1)?($2?$2:undef):2; }
+      elsif (/^paper(=\s*(.*?)\s*)?$/)
+        { parsepaper($h{paper} = defined($1)?$2:shift(@ARGV)); }
+      elsif (/^flatten(=([01]))?$/)
+        { $h{flatten} = defined($1)?$2:1; }
+      elsif (/^eps(=([01]))?$/)
+        { $h{eps} = defined($1)?$2:1; }
+      elsif (/^printrc(=(0|1))?$/)
+        { $h{printrc} = defined($1)?$2:1; }
+      elsif (/^printbb(=(0|1))?$/)
+        { $h{printbb} = defined($1)?$2:1; }
+      elsif (/^set$/)
+        { assignhash(\%h,undef,shift(@ARGV)); }
+      elsif (/^acro$/)
+        { assignhash(\%h,undef,"pdfmethod=acro"); $h{antiacro}=1; }
+      else
+        { die "unknown option $_: $opt.\n"; }
+    }
+  }
+  @ARGV = @files;
+  return %h;
+}
+
+# Parse page specification, return (from,to)
+sub parsepp
+{ my($range) = @_;
+  return undef unless defined $range;
+  $range=~/^\s*(\d+)?\s*(-\s*(\d+)?\s*)?$/
+    or die "invalid page range: $range.\n";
+  return (defined($1)?$1:undef,defined($3)?$3:defined($2)?undef:$1);
+}
+
+# Parse margin specification, return number (>=0: points, <0: percents)
+sub parsemargin
+{ my($margin) = @_;
+  return undef unless defined $margin;
+  $margin=~/^\s*(\d+(\.\d+)?|\.\d+)\s*(%|mm|cm|in|pt|)\s*$/i
+    or die "bad margin specification: $margin.\n";
+  return  ($3 eq "%")?-$1
+         :(lc($3) eq "mm")?($1*2.834645669)
+         :(lc($3) eq "cm")?($1*28.34645669)
+         :(lc($3) eq "in")?($1*72)
+         :$1;
+}
+
+# Parse scale factor, -1 = maximum scale
+sub parsescale
+{ my($scale) = @_;
+  return undef unless defined $scale;
+  return -1 if $scale =~ /^\s*max\s*/i;
+  $scale =~ /^\s*(\d+(\.\d+)?|\.\d+)\s*(%?)\s*$/
+    or die "bad scale factor: $scale.\n";
+  return ($3 eq "%")?$1/100:$1;
+}
+
+# parse (multi-page) bounding box, return array of array(4) of coordinates
+sub parsebb
+{ my($bb,$noerr) = @_;
+  return () unless $bb=~/\S/;
+  if ($bb =~ /^[\s\d,\/]*$/)
+  { $bb=~s/^\s*//; $bb=~s/\s*$//;
+    my @bb = split(/\s*[\s,\/]\s*/,$bb);
+    if ((@bb==0) || (@bb % 4) || (grep {!/^\d+$/} @bb))
+    { return undef if $noerr; die "bad bounding box: $bb.\n"; }
+    my @bb2 = (); while (@bb) { push(@bb2,[splice(@bb,0,4)]); }
+    return @bb2;
+  }
+  else
+  { my ($paper,$x,$y) = parsepaper($bb,1);
+    if (!defined $x)
+    { return undef if $noerr; die "bad bounding box: $bb.\n"; }
+    return [0,0,$x,$y];
+  }
+}
+
+# Return paper specification: (name,width,height)
+sub parsepaper
+{ my($paper,$noerr) = @_;
+  if     ($paper =~ /^\s*a0\s*$/i) { return ("A0",2384,3376); }
+  elsif  ($paper =~ /^\s*a1\s*$/i) { return ("A1",1688,2384); }
+  elsif  ($paper =~ /^\s*a2\s*$/i) { return ("A2",1192,1688); }
+  elsif  ($paper =~ /^\s*a3\s*$/i) { return ("A3",844,1192); }
+  elsif  ($paper =~ /^\s*a4\s*$/i) { return ("A4",596,844); }
+  elsif  ($paper =~ /^\s*a5\s*$/i) { return ("A5",422,596); }
+  elsif  ($paper =~ /^\s*a6\s*$/i) { return ("A6",298,422); }
+  elsif  ($paper =~ /^\s*letter\s*$/i) { return ("letter",612,792); }
+  elsif  ($paper =~ /^\s*(\d+)\s*[x*]\s*(\d+)\s*(mm|cm|in|pt|)\s*$/)
+  { if (lc($3) eq "mm")    { return ("Plain",$1*2.834645669,$2*2.834645669); }
+    elsif (lc($3) eq "cm") { return ("Plain",$1*28.34645669,$2*28.34645669); }
+    elsif (lc($3) eq "in") { return ("Plain",$1*72,$2*72); }
+    else                   { return ("Plain",$1,$2); }
+  }
+  else { return undef if $noerr; die "unknown paper format: $paper.\n"; }
+}
+
+# Return border width and border distance
+sub parseborder
+{ my ($border) = @_;
+  $border =~ /^\s*(\d+(\.\d*)?|\.\d+)?\s*(,\s*(-?\d+(\.\d*)?|\.\d+))?\s*$/
+    or die "bad border specification: $border.\n";
+  return ($1,$4);
+}
+
+sub parselayout
+{ my ($layout) = @_;
+  $layout =~ /^\s*([lr][tb]|[tb][lr])?\s*$/
+    or die "bad layout specification: $layout.\n";
+  return $1;
+}
+
+sub printhelp
+{ print
+"NAME
+  psx - convert and manipulate postscript files.
+
+SYNOPSIS
+  psx [-options] [files]
+
+DESCRIPTION
+  Read an optionally zipped or compressed postscript/dvi/pdf file and output
+  a postscript file processed according to the given options. When no input
+  file is specified on the command line, standard input is read. When no
+  output file is specified and stdout is not redirected, the file is printed.
+
+OPTIONS
+  -h     print this help text.
+  -x     open X11 dialog for options.
+  -#     # pages per sheet, 1, 2, 4, 8, or 6 (default: -$OPT{nup}).
+  -s #   center and scale up by factor # (requires bounding box).
+  -m     center and maximize pages (shorthand for -s max).
+  -b     draw border around pages.
+  -P prt print to printer prt.
+  -o fn  save output in file fn.
+  -d     debug mode (-dd: debug more).
+  -v     verbose mode (-vv: verbose more).
+  --copies #                  print # copies
+  --pp [firstpage]-lastpage   selecte page range.
+  --book                      rearrange pages for booklet, forces -2.
+  --layout                    page layout: e.g: tl = top-bottom, left-right.
+  --flip                      flip every other page.
+  --landscape                 set landscape mode for ghostscript
+  --trim                      trim pages (remove white pixels).
+  --number                    page numbering.
+  --raster                    rasterize postscript file.
+  --antishittex               fix dvips \"postscript\" (pages collapse).
+  --antisoffice               fix star-office \"postscript\".
+  --antiacro                  fix acroread \"postscript\" (small pages).
+  --duplex                    duplex output.
+  --tumble                    turn page over short side (if duplex).
+  --tray #                    select printer tray.
+  --staple                    staple output (Xerox PS).
+  --margin <spec>             specifiy margins, e.g. \"12\", \"1cm\", \"5%\".
+  --innermargin <spec>        specifiy margin of inner pages.
+  --bb left bottom right top  bounding box for automatically scaling (in pts).
+  --bbp [firstpage]-lastpage  determine bounding box on these pages.
+  --bbmulti                   meassure multi-sided bounding box (default: 2)
+  --paper                     set paper format (\"A4\",\"letter\",\"20x29cm\").
+  --eps                       write bounding box into output file
+  --flatten                   try to remove all pstops tags.
+  --set var=value             set value of internal variable var.
+  --acro                      synonym for --set pdfmedthod=acro --antiacro
+  --printbb                   print bounding box file.
+  --printrc                   print config file.
+
+REQUIREMENTS
+  gzip bzip2 wish lpr vpp pdftops pdf2ps acroread dvips psselect psbook
+  pstops gs mkfifo mknod
+
+Release 2.7.5, 8/2005, MH.
+";
+  exit 0;
+}
+
+# Expand multiline string into hash, syntax "var=val" or "arr(idx)=val"
+sub mkhash
+{ my($source,$str) = @_;
+  my(%h);
+  warn "reading configuration data from $source.\n" if $OPT{verbose}>=2;
+  foreach (split(/\r*\n/,$str))
+  { next if /^\s*(#|$)/;
+    assignhash(\%h,$source,$_);
+  }
+  return %h;
+}
+
+# evaluate assignment in hash $hr
+sub assignhash
+{ my($hr,$source,$ass) = @_;
+  if ($ass =~ /^([\w_+-]+)(?:\(([\w_+-]+)\))?\s*=\s*(.*?)\s*$/)
+  { if (defined $2) { $hr->{$1}->{$2} = ($3 eq "")?undef:$3; }
+    else { $hr->{$1} = ($3 eq "")?undef:$3; }
+  }
+  else
+  { die "bad assignment" . (defined($source)?" in $source":"") . ": $ass.\n"; }
+}
+
+# Locate a program, if strict is true, die if not found (otherwise: warn)
+# Found path is cached in ${OPT}->{progs}->{name}
+sub locate
+{ my ($name,$strict) = @_;
+  if (exists $OPT{progs}->{$name})
+  { if (-x $OPT{progs}->{$name}) { return $OPT{progs}->{$name}; }
+    elsif ($strict) { die "cannot locate program $name.\n"; }
+    elsif (!defined($OPT{progs}->{$name})) { return undef; }
+    else { warn "cannot stat $name at $OPT{progs}->{$name}.\n"; return undef; }
+  }
+  else
+  { foreach (split(":",$ENV{PATH}))
+    { if (/^\s*(.*\S)\s*$/ && (-x "$1/$name"))
+      { return $OPT{progs}->{$name}="$1/$name"; }
+    }
+    $OPT{progs}->{$name} = undef;
+    if ($strict) { die "cannot locate program $name.\n"; }
+    elsif ($OPT{debug}>=1)
+    { warn "cannot locate program $name (ignoring, but might fail later).\n"; }
+  }
+}
+
+# convert hash to string
+sub hashtostring
+{ my($hr) = @_;
+  my($var,$str);
+  foreach $var (sort(keys(%$hr)))
+  { if (ref($hr->{$var}) eq "HASH")
+    { foreach (sort(keys(%{$hr->{$var}})))
+      { $str .= "$var($_) = $hr->{$var}->{$_}\n"; }
+    }
+    else
+    { $str .= "$var = ".(defined($hr->{$var})?"$hr->{$var}":"")."\n";}
+  }
+  return $str;
+}
+
+# merge hashes, where first given keys have precedence
+sub mergehash
+{ my(@hrs) = @_;
+  my(%h,$hr,$var);
+  foreach $hr (@hrs)
+  { foreach $var (keys(%$hr))
+    { if (ref($hr->{$var}) eq "HASH")
+      { foreach (keys(%{$hr->{$var}}))
+        { $h{$var}->{$_} = $hr->{$var}->{$_} unless exists $h{$var}->{$_}; }
+      }
+      else { $h{$var} = $hr->{$var} unless exists $h{$var}; }
+    }
+  }
+  return %h;
+}
+
+# Fork wish process, adjust %OPT accordingly
+sub startwish
+{ my $wish = locate("wish",1);
+  if (open(W,"-|")==0)
+  { # I'm the baby
+    open(WP,"|$wish") or die "Cannot fork wish.\n";
+    ## open(WP,">xxx");
+    foreach (qw/pages nup printer scale/)
+    { print WP "set $_ \"", defined($OPT{$_})?$OPT{$_}:"", "\"\n"; }
+    print WP "set printers {", join(" ", map { "\{$_\}"; }
+                                    grep { defined($OPT{printers}->{$_}); }
+                                         keys(%{$OPT{printers}})),
+             "}\n";
+    print WP $TCLTKCODE or die "Cannot send tcl/tk code to wish.\n";
+    close(WP) or die "wish exited with error code $?.\n";
+    wait; exit 0;
+  }
+  wait;
+  unless (<W> =~ /^OK\s*$/) { close(W); exit 1; }
+  while(<W>)
+  { $OPT{$1} = $2 if /^(pages|nup|printer|scale)\s*=\s*([^\r\n]+)?/; }
+  close(W);
+}
+
+# compute maximum
+sub max
+{ my ($a,$b) = @_;
+  return (!defined($b))?$a:(!defined($a))?$b:($a>$b)?$a:$b;
+}
+
+# compute minimum
+sub min
+{ my ($a,$b) = @_;
+  return (!defined($b))?$a:(!defined($a))?$b:($a<$b)?$a:$b;
+}
+
+# return maximum bounding box
+sub bbmax
+{ local($bbref1,$bbref2) = @_;
+  return $bbref1 unless defined $bbref2;
+  return $bbref2 unless defined $bbref1;
+  return [ min($bbref1->[0],$bbref2->[0]), min($bbref1->[1],$bbref2->[1]),
+           max($bbref1->[2],$bbref2->[2]), max($bbref1->[3],$bbref2->[3]) ];
+}
+
+# quote shell characters
+sub quote
+{ local($_) = @_;
+  s/([^-a-zA-Z0-9_.@%^=])/\\\1/g;
+  return $_;
+}
+
+
+# Main program --------------------------------------------------------
+
+# Read variables from end of file
+readdatavars();
+
+# Read (and activate) options from the command line
+%OPT_ARGS = readargs();
+%OPT      = %OPT_ARGS;
+
+warn "psx version 2.7.5\n" if $OPT{debug};
+
+# Read default options, stored in DATA part of script
+%OPT_DEF  = mkhash("$0 (OPT_DEFAULT)",$OPT_DEFAULT);
+
+# Read special default options particularly for this program name
+$_=$0; s/^.*\///; $_="OPT_".uc($_);
+if (defined $$_)
+{ %OPT_DEF  = mergehash({mkhash("$0 ($_)",$$_)},\%OPT_DEF); }
+
+# Activate default options
+%OPT      = mergehash(\%OPT_ARGS,\%OPT_DEF);
+
+# Read (and activate) special options for -x
+%OPT_DEF  = mergehash({mkhash("$0 (OPT_X)",$OPT_X)},\%OPT_DEF) if $OPT{x};
+
+%OPT      = mergehash(\%OPT_ARGS,\%OPT_DEF);             # reactivate defaults
+
+# Read (and activate) options from config file
+$_=$0; s/^.*\///; $_=$ENV{HOME}."/.${_}rc";
+if (-r $_)
+{ open(RC,$_) or die "read error on config file $_.\n";
+  %OPT = mergehash(\%OPT_ARGS,{mkhash($_,join("",<RC>))},\%OPT_DEF);
+  close(RC);
+}
+else
+{ warn "cannot read config file $_ (ignoring).\n" if $OPT{verbose}>=2; }
+
+printhelp if $OPT{help};
+if ($OPT{printrc})
+{ delete $OPT{printrc}; print hashtostring(\%OPT); exit 0; }
+
+if (-t && !@ARGV)
+{ warn "No input file specified.\nType \"$0 -h\" for help.\n"; exit 1; }
+
+# Search for external programs
+foreach (qw/gzip bzip2 wish lpr vpp pdftops pdf2ps acroread dvips
+            psselect psbook pstops gs mkfifo mknod/)
+{ locate($_,0); }
+
+startwish() if $OPT{x};
+
+if ($OPT{debug}>=2)
+{ warn "--- Parameters ","-" x 35,"\n",hashtostring(\%OPT),"-"x50,"\n"; }
+
+# Set internal variables
+$tmpdir="/tmp";
+
+if    (@ARGV==0)  { processfile("-",""); }
+elsif (@ARGV==1)  { processfile($ARGV[0],""); }
+else
+{ foreach (@ARGV)
+  { warn "file: $_\n" if $OPT{verbose}>=1;
+    processfile($_," while processing file $_");
+  }
+}
+
+# process file named $fn
+sub processfile
+{ my ($file,$errorprefix) = @_;
+  eval { processfile2($file); };
+  if ($@)
+  { die "ctrl-c.\n" if $@ eq "ctrl-c.\n";
+    warn "error$errorprefix: $@";
+  }
+}
+ 
+sub processfile2
+{ my ($file) = @_;
+  my $rmfile = 0;
+  my $newfile;
+
+  my $nup                       = $OPT{nup};
+  my $scale                     = parsescale($OPT{scale});
+  my ($border,$borderdist)      = parseborder($OPT{border});
+  my ($firstpage,$lastpage)     = parsepp($OPT{pages});
+  my $book                      = $OPT{book};
+  my $layout                    = $OPT{layout};
+  my $flip                      = $OPT{flip};
+  my $landscape                 = $OPT{landscape};
+  my $trim                      = $OPT{trim};
+  my $number                    = $OPT{number};
+  my $num_place                 = $OPT{'number-place'};
+  my $num_font                  = $OPT{'number-font'};
+  my $num_size                  = $OPT{'number-size'};
+  my $num_padx                  = $OPT{'number-padx'};
+  my $num_pady                  = $OPT{'number-pady'};
+  my $raster                    = $OPT{raster};
+  my $antishittex               = $OPT{antishittex};
+  my $antisoffice               = $OPT{antisoffice};
+  my $antiacro                  = $OPT{antiacro};
+  my $duplex                    = $OPT{duplex};
+  my $tumble                    = $OPT{tumble};
+  my $tray                      = $OPT{tray};  
+  my $staple			= $OPT{staple};
+  my $margin                    = parsemargin($OPT{margin});
+  my $innermargin               = parsemargin($OPT{innermargin});
+  my @bb                        = parsebb($OPT{bb});
+  my ($bbfirstpage,$bblastpage) = parsepp($OPT{bbpages});
+  my $bbmod                     = $OPT{bbmod} || 1;
+  my $flatten                   = $OPT{flatten};
+  my $flattenlast               = undef;
+  my ($paper,$width,$height)    = parsepaper($OPT{paper});
+  my $overridepaper             = 1;
+  my $eps                       = $OPT{eps};
+  my $printbb                   = $OPT{printbb};
+  my $bbmethod                  = $OPT{bbmethod};
+  my $pdfmethod                 = $OPT{pdfmethod};
+  my $copies                    = $OPT{copies};
+  my $count   = 1;
+  my $done    = 0;
+
+  # E.g.: execcmd("gunzip","gzip -dc <$file >$newfile");
+  sub execcmd
+  { my ($txt,$cmd,$args) = (@_[0],split(/\s+/,$_[1],2));
+    warn "$txt\n" if $OPT{verbose}>=1;
+    my $cmdline=locate($cmd,1) . " " . $args;
+    warn "$cmdline\n" if $OPT{debug}>=1;
+    !system($cmdline) or die "error.\n";
+#    open(C,"$cmdline 2>&1 |") or die "cannot fork $cmd.\n";
+#    my $msg = join("",<C>); warn $msg if $OPT{verbose};
+#    close(C) or die "error executing $cmd: $1 $?.\n";
+#    return $msg;
+  }  
+
+  while (!$done)
+  { 
+    $newfile="$tmpdir/psx.$$-$count";
+
+    sub cleanup { unlink($newfile); unlink($file) if $rmfile; die @_; }
+    local $SIG{__DIE__} = \&cleanup;
+    local $SIG{INT} = \&cleanup;
+
+    # Copy file if necessary
+    if ($file eq "-")
+    { warn "copy stdin\n" if $OPT{verbose};
+      open(F,">$newfile") or die "cannot write $newfile.\n";
+      while (<>) { print F; }
+      close(F) or die "cannot write $newfile.\n";
+      next;
+    }
+
+    # Find magic number
+    (-f $file) or die "file $file not found.\n";
+    open(F,$file) or die "file $file not readable.\n";
+    read(F,$_,5); close(F);
+    my $magic=unpack("H*",$_);
+    warn "magic number = $magic\n" if $OPT{debug}>=1;
+
+    if ($magic =~ /^1f/)  # gzipped
+    { execcmd("gunzip","gzip -dc <".quote($file)." > ".quote($newfile)); }
+
+    elsif ($magic =~ /^425a/)  # bzip2
+    { execcmd("bunzip", "bzip2 -dc <".quote($file)." > ".quote($newfile)); }
+
+    elsif ($magic=~/^f7/) # dvi
+    { execcmd("dvips","dvips -q -R -D600 -Z -o " . quote($newfile)
+                . (defined($firstpage)?" -p =$firstpage":"")
+                . (defined($lastpage)?" -l =$lastpage":"")." ".quote($file));
+      $firstpage = $lastpage = undef;
+    }
+
+    elsif ($magic=~/^25504446/) # pdf
+    { $pdfmethod = locate("pdftops")?"pdftops"
+                   :locate("acroread")?"acro"
+                   :locate("pdf2ps")?"pdf2ps"
+                   :"no pdf converter found"
+        if $pdfmethod =~ /^(auto)?$/i;
+      if ($pdfmethod =~ /^pdftops$/i)
+      { execcmd("pdftops","pdftops " . quote($file)." ".quote($newfile)); }
+      elsif ($pdfmethod =~ /^pdf2ps$/i)
+      { execcmd("pdf2ps","pdf2ps ".quote($file)." ".quote($newfile)); }
+      elsif ($pdfmethod =~ /^acro(read)?$/i)
+      { execcmd("acroread","acroread -toPostScript -level2 -printerhalftones"
+                    ." -pairs ".quote($file)." ".quote($newfile));
+      }
+      else
+      { die "unknown pdfmethod: $pdfmethod.\n"; }
+    }
+
+    elsif ($magic=~/^(04)?2521/) # ps
+    { 
+      if ($flatten)
+      { if (!defined($flattenlast))
+        { warn "flattening\n" if $OPT{verbose};
+          open(IN,$file) or die "file $file not readable.\n";
+          open(OUT,">$newfile") or die "file $newfile not writeable.\n";
+          my $page=0; $flattenlast=0; my $newpage=0;
+          while(<IN>)
+          { if (/^%%BeginProcSet: PStoPS/)
+            { while (<IN>) { last if /^%%EndProcSet/; } }
+            elsif (/^userdict\/PStoPSxform PStoPSmatrix matrix currentmatrix/)
+            { <IN>; <IN>; }
+            elsif (/^%%Page: /) { ; }
+            elsif (/^userdict\/PStoPSsaved save put/)
+            { while (<IN>) { last if /^PStoPSxform concat/; }
+              print OUT "%%Page: ",++$page,"\n"; $newpage=1;
+            }
+            elsif (/^PStoPSsaved restore/) { ; }
+            else
+            { $flattenlast=$page if $newpage && !/^showpage\s*/;
+              $newpage=0; print OUT;
+            }
+          }
+          close(IN); close(OUT);
+        }
+        else
+        { my $pages=$flattenlast;
+          open(IN,$file) or die "file $file not readable.\n";
+          open(OUT,">$newfile") or die "file $newfile not writeable.\n";
+          while(<IN>)
+          { if (/^%%Pages:/)
+            { print OUT "%%Pages: $pages\n" if defined $pages; undef $pages; }
+            elsif ((/^%%Page:\s*(\d+)/) && ($1 > $flattenlast)) { <IN>; }
+            else { print OUT; }
+          }
+          close(IN); close(OUT);
+          undef $flatten; undef $flattenlast;
+        }
+        next;
+      }
+
+      if ($antishittex)
+      { warn "anti-shittex-ing\n" if $OPT{verbose};
+        open(IN,$file) or die "file $file not readable.\n";
+        open(OUT,">$newfile") or die "file $newfile not writeable.\n";
+        my $count=0; my $b=0; my $e=0;
+        while(<IN>)
+        { $_="" if $e && /^%%EndDocument/; $e=/^% End Imported /;
+          $_="" if $b && /^%%BeginDocument/; $b=/^% Begin Imported /;
+          if (/^%%/)
+          { if (/^%%BeginDocument:/) { $count++; }
+            elsif (/^%%EndDocument/) { $count--; }
+            elsif ($count>0)         { $_=""; }
+          }
+          print OUT;
+        }
+        close(IN); close(OUT);
+        $antishittex=undef; next;
+      }
+
+      if ($antiacro)
+      { warn "anti-acroread-ing\n" if $OPT{verbose};
+        open(IN,$file) or die "file $file not readable.\n";
+        open(OUT,">$newfile") or die "file $newfile not writeable.\n";
+        my $count=0;
+        while(<IN>)
+        { if ($count==0) { $count=1 if /^\/AS\s+\{/; }
+          elsif ($count>0)
+          { if (($count>50) || (/^\}/)) { $count=-1; }
+            else { $_=" $_"; s/\s(translate|scale)\s/ pop pop /sg; $count++; }
+          }
+          print OUT;
+        }
+        close(IN); close(OUT);
+        $antiacro=undef; next;
+      }
+
+      if ($antisoffice)
+      { warn "anti-staroffice-ing\n" if $OPT{verbose};
+        $cmd=locate("pstops",1)
+                . ($OPT{verbose}?"":" -q")
+                . ((defined($paper)&&($paper!~/^plain$/i))?" -p$paper":"")
+                . " \"1:0\" " . quote($file) . " > " . quote($newfile);
+        warn "$cmd\n" if $OPT{debug}>=1;
+        !system($cmd) or die "error.\n";
+        $antisoffice=undef; next;
+      }
+
+      if (defined($firstpage) || defined($lastpage))
+      { execcmd("psselect","psselect" . ($OPT{verbose}?"":" -q")
+           . " -p$firstpage-$lastpage ".quote($file)." >".quote($newfile));
+        undef $firstpage; undef $lastpage;
+        next;
+      }
+
+      if ($book)
+      { execcmd("psbook","psbook ".quote($file)." >".quote($newfile));
+        $book=0; next;
+      }
+
+      if (($trim || $border || $scale || $printbb || $eps || $number)
+                 && (scalar(@bb)==0))
+      { $bbmethod = (locate(mknod)||locate(mkfifo))?"bin/pipe":"bin"
+          if $bbmethod=~/^(auto)?$/i;
+        warn "determining bounding box (method: $bbmethod)\n" if $OPT{verbose};
+        
+        @bb = ();
+          
+        if ($bbmethod =~ /^ps(\/.*)?$/)
+        { $ENV{"psxdebug"}=(($OPT{debug}>0)?$OPT{debug}:0);
+          $ENV{"psxfirstpage"}=defined($bbfirstpage)?$bbfirstpage:1;
+          $ENV{"psxlastpage"}=defined($bblastpage)?$bblastpage:999;
+          my $cmd = locate("gs",1) . " -q -dNOPAUSE -sDEVICE=bit '-dtest={}' "
+               . " '-d#!={}' -sOutputFile=/dev/null -g${width}x${height} "
+               . " -dSAFER $0 "
+               . "< $file |";
+          warn "$cmd\n" if $OPT{debug}>=1;
+          open(GS,$cmd) or die "cannot fork gs.\n";
+          while(<GS>)
+          { if (/^page\s+(\d+):\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s*$/i)
+            { $bb[$1 % $bbmod] = bbmax($bb[$1 % $bbmod],[$2,$3,$4,$5]);
+              $_ .= "  Best: " . join(" ",@{$bb[$1%$bbmod]}) . "\n"; s/\n / /;
+            }
+            warn $_ if $OPT{debug}>=1;
+          }
+          close(GS);
+        }
+        elsif ($bbmethod =~ /^bin(\/.*)?$/)
+        { my $width8 = ($width+7)>>3;
+          my $emptyline = "\0" x $width8;
+          my $mask = ("\xff"x($width8-1)).chr((1<<($width8<<3)-$width)-1^255);
+          my $cmd,$pipe;
+
+          $pipe = "$newfile-pipe" if $bbmethod =~ /^bin\/pipe/;
+          $cmd = locate("gs",1)
+               . " -q -dNOPAUSE -dSAFER -sDEVICE=bit -g${width}x${height} ";
+
+          local $SIG{INT} = sub
+            { unlink($pipe) if defined $pipe; die "ctrl-c.\n"; };
+
+          if (defined $pipe)
+          { (($_=locate("mkfifo",0)) && !system($_,$pipe))
+            or (($_=locate("mknod",0)) && !system($_,$pipe,"p"))
+            or die "cannot make named pipe $pipe.\n";
+            $cmd .= "-sOutputFile=$pipe $file </dev/null >/dev/null";
+          }
+          else { $cmd .= "-sOutputFile=- $file </dev/null |"; }
+          warn "$cmd\n" if $OPT{debug}>=1;
+          if (defined $pipe)
+          { if (fork()==0) { exec($cmd); }
+            local  $SIG{CHLD} = sub
+            { unlink($pipe) if defined $pipe; die "Ghostscript crashed.\n"; };
+            open(GS,$pipe) or die "cannot read from pipe $pipe.\n";
+          }
+          else { open(GS,$cmd) or die "cannot fork gs.\n"; }
+
+          PSPAGE:
+          for (my $page=1;;$page++)
+          { last PSPAGE if ($bblastpage>0) && ($page>$bblastpage);
+            if ($page<$bbfirstpage)
+            { last PSPAGE unless read(GS,$_,$width8*$height); next; }
+            my ($llx,$lly,$urx,$ury) = ($width,$height,0,0);
+            my ($x,$y,@line);
+            my $line=$emptyline;
+            my $p = ($page-1) % $bbmod;
+            if ($OPT{debug}>=3)
+            { for ($y=$height;$y>0;$y--)
+              { read(GS,$_,$width8) or last PSPAGE; $_ &= $mask;
+                warn sprintf("line %03d: %s\n",$y,unpack("B*",$_));
+                if ($_ ne $emptyline)
+                { $line |= $_; $ury=$y if $y>$ury; $lly=$y if $y<$lly; }
+              }
+            }
+            else
+            { for ($y=$height;$y>0;$y--)
+              { read(GS,$_,$width8) or last PSPAGE; $_ &= $mask;
+                if ($_ ne $emptyline)
+                { $line |= $_; $ury=$y if $y>$ury; $lly=$y if $y<$lly; }
+              }
+            }
+            @line = split("",$line);
+            for ($x=0;($x<$width8)&&($line[$x] eq "\0");$x++) {}
+            if ($x<$width8)
+            { $llx = $x<<3;
+              if ($_=ord($line[$x])) { while ($_<128) { $_<<=1; $llx++; } }
+              for ($x=$width8-1;($x>=0)&&($line[$x] eq "\0");$x--) { }
+              $urx = $x<<3;
+              $_ = ord($line[$x]); while ($_) { $_=($_<<1)&255; $urx++; }
+              $bb[$p]=bbmax($bb[$p],[$llx,$lly,$urx,$ury]);
+
+              warn "Page $page: $llx $lly $urx $ury  Best: "
+                   . join(" ",@{$bb[$p]}) . "\n"
+                if $OPT{debug}>=1;
+            }
+            else
+            { warn "Page $page: empty\n" if $OPT{debug}>=1; }
+          }
+          close(GS); if (defined $pipe) { unlink($pipe); wait; }
+        }
+        else
+        { die "unknown bbmethod: $bbmethod.\n"; }
+
+        defined($bb[0])
+          or die "error rendering postscript file.\n";
+
+        warn "bounding box: ", join(" / ",map { join(" ",@$_); } @bb), "\n"
+          if $OPT{verbose};
+      }
+ 
+      if ($printbb)
+      { print join(" / ",map { join(" ",@$_); } @bb), "\n";
+        $printbb=0; $done=1; next;
+      }
+
+if (0) {  ########## DEAD CODE
+      if (@bb > 1)
+      { # shift pages horizontally such that they overlap better
+        warn "shift pages\n" if $OPT{verbose};
+        my $cx=0; foreach (@bb) { $cx += $_->[0] + $_->[2]; } $cx = $cx/2/@bb;
+        my $dx; my $str="".scalar(@bb).":"; my $newbb; my $i = 0;
+        foreach (@bb)
+        { $dx = $cx-($_->[0]+$_->[2])/2;
+          $str .= ($i?",":"") . "$i($dx,0)"; $i++;
+          $newbb = bbmax($newbb,[$_->[0]+$dx,$_->[1],$_->[2]+$dx,$_->[3]]);
+        }
+        @bb = ($newbb);
+        warn "pstops \"$str\"\n" if $OPT{verbose};
+        $cmd=locate("pstops",1)
+                . ($OPT{verbose}?"":" -q")
+                . ((defined($paper)&&($paper!~/^plain$/i))?" -p$paper":"")
+                . " \"$str\" ".quote($file)." >".quote($newfile);
+        warn "$cmd\n" if $OPT{debug}>=1;
+        !system($cmd) or die "error.\n";
+        next;
+      }
+}
+
+      if (@bb > 1)
+      { # smart shifting of pages
+        # 1. find BB $maxbb that covers all pages
+        # 2. find width $w / height $h sufficiantly large for all pages
+        # 3. center new BB $newbb (with $w/$h) in $maxbb
+        # 4. shift every page as few as possible to be covered by newbb
+        warn "smart shift pages\n" if $OPT{verbose};
+        my ($newbb,$w,$h);
+        foreach $bb (@bb)
+        { $newbb = bbmax($newbb,$bb);
+          $w=max($w,$bb->[2]-$bb->[0]);
+          $h=max($h,$bb->[3]-$bb->[1]);
+        }
+        $newbb->[0] += int(($newbb->[2]-$newbb->[0]-$w)/2);
+        $newbb->[1] += int(($newbb->[3]-$newbb->[1]-$h)/2);
+        ($newbb->[2],$newbb->[3]) = ($newbb->[0]+$w,$newbb->[1]+$h);
+        warn "new bb: ",join(" ",@$newbb),"\n" if $OPT{debug};
+        my ($dx,$dy); my $str="".scalar(@bb).":"; my $i=0;
+        foreach $bb (@bb)
+        { $dx = max($newbb->[0]-$bb->[0],0) || min($newbb->[2]-$bb->[2],0);
+          $dy = max($newbb->[1]-$bb->[1],0) || min($newbb->[3]-$bb->[3],0);
+          warn "bb: ",join(" ",@$bb)," dx=$dx, dy=$dy\n" if $OPT{debug};
+          $str .= ($i?",":"") . "$i($dx,$dy)"; $i++;
+        }
+        @bb = ($newbb);
+        warn "pstops \"$str\"\n" if $OPT{verbose};
+        $cmd=locate("pstops",1)
+                . ($OPT{verbose}?"":" -q")
+                . ((defined($paper)&&($paper!~/^plain$/i))?" -p$paper":"")
+                . " \"$str\" ".quote($file)." >".quote($newfile);
+        warn "$cmd\n" if $OPT{debug}>=1;
+        !system($cmd) or die "error.\n";
+        next;
+      }
+    
+      if ($trim || $border || $number)
+      { warn "trimming\n" if $trim && $OPT{verbose};
+        warn "drawing border\n" if $border && $OPT{verbose};
+        warn "numbering\n" if $number && $OPT{verbose};
+        $borderdist = 10 unless defined $borderdist;
+        my $i = 0; my $num=0+$number;
+        my $prolog = $trim?"/initclip{}def\n":undef;
+        open(IN,$file) or die "file $file not readable.\n";
+        open(OUT,">$newfile") or die "file $newfile not writeable.\n";
+        while(<IN>)
+        { if (defined($prolog) && /^%%BeginProlog/)
+          { $_ .= $prolog; undef $prolog; }
+          elsif (defined($prolog) && (/^%%BeginProcSet/ || /^[^%\r\n]/))
+          { print OUT $prolog; undef $prolog; }
+          print OUT;
+          if (/^%%page:\s/i)
+          { my($llx,$lly,$urx,$ury) = @{$bb[$i]}; $i=($i+1)%@bb;
+            if ($border)
+            { printf OUT "gsave matrix currentmatrix\ninitmatrix newpath\n"
+                     . "%f setlinewidth\n%f %f moveto\n%f 0 rlineto\n"
+                     . "0 %f rlineto\n %f 0 rlineto\nclosepath stroke\n"
+                     . "setmatrix grestore\n\n",
+                     $border,$llx-$borderdist-$border/2,
+                     $lly-$borderdist-$border/2,
+                     $urx-$llx+2*$borderdist+$border,
+                     $ury-$lly+2*$borderdist+$border,
+                     -($urx-$llx+2*$borderdist+$border);
+            }
+            if ($number)
+            { printf OUT "gsave matrix currentmatrix initmatrix\n"
+                  . "currentfont /%s findfont %d scalefont setfont\n"
+                  . "%f %f moveto (%d) %s show\n"
+                  . "setfont setmatrix grestore\n\n",
+                  $num_font,$num_size,
+                  ($num_place=~/l/)?$llx+$num_padx
+                    :($num_place=~/r/)?$urx-$num_padx
+                    :($urx+$llx)/2,
+                  ($num_place=~/t/)?$ury+$num_pady
+                    :$lly-$num_pady-$num_size,
+                  $num,
+                  ($num_place=~/l/)?"":("dup stringwidth pop" .
+                    (($num_place=~/r/)?"":" 2 div") . " neg 0 rmoveto"),
+                  "";
+              $num++;
+            }
+            if ($trim)
+            { printf OUT "matrix currentmatrix initmatrix %d %d %d %d"
+                     ." rectclip setmatrix\n",
+                     $llx-1,$lly-1,$urx-$llx+2,$ury-$lly+2;
+            }
+          }
+        }
+        close(IN); close(OUT);
+
+        if ($border)
+        { foreach(@bb)
+          { $_->[0]-=$borderdist+$border; $_->[1]-=$borderdist+$border;
+            $_->[2]+=$borderdist+$border; $_->[3]+=$borderdist+$border;
+          }
+        }
+
+        $trim=$border=0; undef $number;
+        next;
+      }
+
+      if ($scale || ($nup>1))
+      { 
+        # Convert width,height,margin -> dx,dy,newwidth,newheight
+        sub submargin
+        { my($w,$h,$m) = @_;
+          my($dx,$dy);
+          if (!defined($m)) { $dx=$dy=0; }
+          elsif ($m>=0)     { $dx=$dy=$m; }
+          else              { $dx=-$w*$m/100; $dy=-$h*$m/100; }
+          return ($dx,$dy,$w-2*$dx,$h-2*$dy);
+        }
+
+        my ($llx,$lly,$urx,$ury) = defined($bb[0])?@{$bb[0]}
+                                                  :(0,0,$width,$height);
+
+        #coordinates of physical paper
+        my ($pw,$ph) = ($width,$height);
+
+        #inner coordinates of physical paper
+        my ($pdx,$pdy,$piw,$pih) = submargin($pw,$ph,$margin);
+
+        #coordinates of logical sheet
+        my ($lw,$lh);
+        if    ($nup==1)  { ($lw,$lh) = ($piw,$pih); }
+        elsif ($nup==2)  { ($lw,$lh) = ($piw,$pih/2); }
+        elsif ($nup==4)  { ($lw,$lh) = ($piw/2,$pih/2); }
+        elsif ($nup==8)  { ($lw,$lh) = ($piw/2,$pih/4); }
+        elsif ($nup==16) { ($lw,$lh) = ($piw/4,$pih/4); }
+        else { die "Cannot nup $nup.\n"; }
+
+        #inner coordiantes of logical sheet
+        my ($ldx,$ldy,$liw,$lih) = submargin($lw,$lh,$innermargin);
+
+        #prepare stuff for rotation
+        my $rot = ($nup&42)?"L":"";
+        ($llx,$lly,$urx,$ury)=(-$ury,$llx,-$lly,$urx) if ($rot eq "L");
+
+        #adjust flip, tumble and landscape parameter (if auto)
+        $flip      = ($rot=~/^[LR]$/)?1:0 if $flip=~/^a(uto.*)?$/;
+        $tumble    = ($rot=~/^[LR]$/)?1:0 if $tumble=~/^a(uto.*)?$/;
+        $landscape = ($rot=~/^[LR]$/)?1:0 if $landscape=~/^a(uto.*)?$/;
+
+        #compute scale factor
+        unless ($scale>0)
+        { $sx = $liw/($urx-$llx); $sy = $lih/($ury-$lly);
+          $scale = (($sx<$sy)?$sx:$sy);
+        }
+
+        # positionate logical sheets
+        # layout e.g. "tl": top to bottom, left to right
+        $layout = ($nup&42)?"lb":"tl" unless defined $layout;
+
+        my $nupx = 1; my $a=$nup; while ($a>=4) { $a>>=2; $nupx<<=1; }
+        my $nupy = int($nup/$nupx); die unless $nupx * $nupy == $nup;
+        my $nup1 = ($layout=~/^[lr]/)?$nupy:$nupx;
+        @pos = map { [int($_/$nup1),$_%$nup1] } (0..($nup-1));
+        map { ($_->[0],$_->[1]) = ($_->[1],$_->[0]) } @pos if $layout=~/^[tb]/;
+        map { $_->[0]=$nupx-$_->[0]-1; } @pos if $layout=~/r/;
+        map { $_->[1]=$nupy-$_->[1]-1; } @pos if $layout=~/t/;
+
+# warn "layout: $layout, nupx=$nupx, nupy=$nupy, nup1=$nup1\n";
+# warn join (",",map { "[".$_->[0].",". $_->[1]."]"; } @pos),"\n";
+
+        @spec = map
+          { ($x,$y)=@$_;
+            [$rot,
+             $scale,
+             $pdx + $lw*$x+$lw/2 - $scale*($urx+$llx)/2,
+             $pdy + $lh*$y+$lh/2 - $scale*($ury+$lly)/2
+            ];
+          } @pos;
+        undef $scale;
+
+        warn "\@spec = \n", join("", map { join(" - ",@$_),"\n" } @spec)
+          if $OPT{debug}>=2;
+
+        $i=0; $str=scalar(@spec).":"; $join="";
+        while (@spec)
+        { $_=shift(@spec);
+          $str.=sprintf("$join$i%s\@%1.3f(%1.4f,%1.4f)",@$_); $i++;
+          $join=($i%$nup)?"+":",";
+        }
+        undef $nup;
+
+        warn "pstops \"$str\"\n" if $OPT{verbose};
+        $cmd=locate("pstops",1)
+                . ($OPT{verbose}?"":" -q")
+                . ((defined($paper)&&($paper!~/^plain$/i))?" -p$paper":"")
+                . " \"$str\" ".quote($file)." >".quote($newfile);
+        warn "$cmd\n" if $OPT{debug}>=1;
+        !system($cmd) or die "error.\n";
+        next;
+      }
+
+      if ($flip>0)
+      { execcmd("flipping","pstops" . ($OPT{verbose}?"":" -q")
+                 . " \"2:0,1U($width,$height)\" "
+                 . quote($file)." ".quote($newfile));
+        $flip=0; next;
+      }
+
+      if ($raster)
+      { execcmd("rasterize","gs -q -sDEVICE=pswrite -sOutputFile="
+                 . quote($newfile)." -dNOPAUSE -dSAFER -sPAPERSIZE=a4 -r300 "
+                 . quote($file) . " 1>/dev/null 2>/dev/null </dev/null");
+        undef $raster;
+        next;
+      }
+
+      if (($tumble>0) || defined($duplex) || ($tray>0) || ($landscape>0) || ($staple>0) || ($copies>0))
+      { my @msg = (); my @devopts = (); my $str = "";
+        if ($copies>0) {
+          push(@msg, "set copies ($copies)");
+          push(@opts, "/NumCopies $copies");
+          push(@opts, "/Collate true");
+        }
+        if ($staple>0)
+        { 
+          if ($landscape>0) {
+            push(@msg,"set staple (bottom-left)"); 
+            push(@opts,"/Staple 3 /StapleDetails << /Type 7 /Location 1 >>"); 
+          } else {
+            push(@msg,"set staple (top-left)"); 
+            push(@opts,"/Staple 3 /StapleDetails << /Type 7 /Location 0 >>"); 
+          }
+          push(@opts,"/OutputType (STACKER TRAY)"); 
+          push(@opts,"/Collate true"); 
+        }
+        if ($duplex)
+        { push(@msg,"set duplex"); push(@opts,"/Duplex true"); }
+        if (defined($duplex) && !$duplex)
+        { push(@msg,"set single-sided"); push(@opts,"/Duplex false"); }
+        if ($tumble>0)
+        { push(@msg,"set tumble"); push(@opts,"/Tumble true"); }
+        if ($tray>0)
+        { push(@msg,"set tray=$tray");
+          $str = "statusdict begin " . ($tray-1) . " setpapertray end\n";
+        }
+        if ($landscape>0) { push(@msg,"set landscape"); }
+        warn join(", ",@msg),"\n" if $OPT{verbose};
+        $str .= "<<" . join(" ",@opts) . ">> setpagedevice\n" if @opts;
+        warn "=> $str" if $OPT{debug}>0;
+        my $d=0; my $e=($landscape>0)?0:1;
+        open(IN,$file) or die "file $file not readable.\n";
+        open(OUT,">$newfile") or die "file $newfile not writeable.\n";
+        while (<IN>)
+        { $d=1, $_="%%BeginProlog\n$str%%EndProlog\n$_"
+            if !$d && (/^%%BeginProcSet/ || /^[^%\r\n]/ );
+          $d=1, $_.=$str if !$d && /^%%BeginProlog/i;
+          $e=1, $_="%%Orientation: Landscape\n" if !$e && /%%Orientation:/i;
+          $e=1, $_="%%Orientation: Landscape\n$_"
+            if !$e && (/%%EndComments/i || !/%/);
+          next if $landscape && /^%%PageOrientation:/;
+          print OUT;
+        }
+        close(IN); close(OUT);
+        die "failed, no \"%%BeginProlog\" found.\n" unless $d;
+        $copies=$staple=$tumble=$duplex=$tray=$landscape=undef; next;
+      }
+
+      if ($overridepaper || $eps)
+      { warn "fixing paper size\n" if $OPT{verbose};
+        open(IN,$file) or die "file $file not readable.\n";
+        open(OUT,">$newfile") or die "file $newfile not writeable.\n";
+        while (<IN>)
+        { s/^%!.*/%!PS-Adobe-2.0 EPSF-2.0/ if $eps;
+          last if /^%%EndComments/ || !/^%[%!]/;
+          print OUT unless /^%%(DocumentMedia|BoundingBox):/;
+        }
+        if ($eps)
+        { printf OUT "%%%%BoundingBox: %d %d %d %d\n",@{$bb[0]}; }
+        else
+        { print OUT "%%DocumentMedia: $paper $width $height 0 () ()\n",
+                    "%%BoundingBox: 0 0 $width $height\n";
+        }
+        print OUT unless /^%%BoundingBox:/;
+        while (<IN>) { print OUT; }
+        close(IN); close(OUT);
+        $overridepaper=$eps=undef; next;
+      }
+
+      # output
+      my $printer = $OPT{printer};
+      my $outfile = $OPT{outfile};
+      if ($printer =~ /^\*(.+)?$/)
+      { $printer = (!-t stdout or defined $outfile)?undef:$1; }
+      if ($outfile =~ /^\*(.+)?$/)
+      { $outfile = (!-t stdout or defined $printer)?undef:$1; }
+
+      if (defined($printer))
+      {
+         execcmd("printing",((exists $OPT{printers}->{$printer})
+                             ?$OPT{printers}->{$printer}:"lpr -P $printer")
+#                           . (($copies > 1) ? " -# $copies": " ")
+                           . " <".quote($file));
+      }
+      elsif (defined($outfile))
+      { warn "writing output file\n" if $OPT{verbose}>=1;
+        open(IN,$file) or die "file $file not readable.\n";
+        open(OUT,">$outfile") or die "file $outfile not writeable.\n";
+        while(<IN>) { print OUT; }
+        close(IN); close(OUT) or die "write error in file $outfile.\n";
+      }
+      else
+      { warn "sending file to stdout\n" if $OPT{verbose}>=1;
+        open(F,$file) or die "file $file not readable.\n";
+        while (<F>) { print; }
+        close(F);
+      }
+      $done=1;
+
+    }
+    else # unknown magic
+    { die "unknown magic number $magic.\n"; }
+  } continue { unlink($file) if $rmfile; $file=$newfile; $rmfile=1; $count++; }
+}
+
+exit 0;
+
+
+__DATA__
+
+### TCLTKCODE
+
+#======================================================================
+# Tcl/Tk Code (option -x)
+#======================================================================
+
+set lw 10
+set mw 4
+set pw 16
+
+regexp {^ *(\d+) *- *(\d+) *$} $pages dummy firstpage lastpage
+
+proc selmenu {w varname choices mw} \
+{ menubutton $w -textvar $varname -menu $w.menu -relief raised -width $mw
+  menu $w.menu -tearoff false
+  foreach ch $choices \
+  { $w.menu add command -label $ch -command "set $varname $ch" }
+  return $w
+}
+
+proc fromtolist {from to} \
+{ set l [list]
+  for {set i $from} {$i <= $to} {incr i} {lappend l $i}
+  return $l
+}
+
+proc choice {w var min max steps} \
+{ while {[llength $steps]<3} { lappend steps [lindex $steps end] }
+  frame $w -bd 1 -relief raised
+  canvas $w.up -width 12 -height 7 -bd 0 -highlightthickness 0
+  $w.up create polygon 0 7 6 1 12 7 -fill black
+  canvas $w.dn -width 12 -height 7 -bd 0 -highlightthickness 0
+  $w.dn create polygon 0 1 6 7 12 1 -fill black
+  pack $w.up $w.dn -side top
+  bind $w.up <1> [list choice_p $w $var [lindex $steps 0] $min $max]
+  bind $w.up <2> [list choice_p $w $var [lindex $steps 1] $min $max]
+  bind $w.up <3> [list choice_p $w $var [lindex $steps 2] $min $max]
+  bind $w.dn <1> [list choice_p $w $var [expr -[lindex $steps 0]] $min $max]
+  bind $w.dn <2> [list choice_p $w $var [expr -[lindex $steps 1]] $min $max]
+  bind $w.dn <3> [list choice_p $w $var [expr -[lindex $steps 2]] $min $max]
+}
+
+proc choice_p {w textvar inc min max} \
+{ upvar $textvar val
+  set newval [expr $val+$inc]
+  if {$newval<$min} {set newval $min}
+  if {$newval>$max} {set newval $max}
+  if {$newval!=$val} { set val $newval; }
+}
+  
+frame .pages
+label .pages.label -text "Pages:" -width $lw
+entry .pages.from -width 4 -textvar firstpage
+choice .pages.fromc firstpage 1 1000 {1 10 100}
+selmenu .pages.froms firstpage [fromtolist 1 25] $mw
+label .pages.m -text " to "
+entry .pages.to -width 4 -textvar lastpage
+choice .pages.toc lastpage 1 1000 {1 10 100}
+selmenu .pages.tos lastpage [fromtolist 1 25] $mw
+
+pack .pages.label .pages.from .pages.fromc .pages.froms .pages.m \
+     .pages.to .pages.toc .pages.tos -side left -fill x
+pack .pages -fill x
+
+frame .nup
+label .nup.label -text "n-up:" -width $lw
+selmenu .nup.mb nup [list 1 2 4 8 16] $mw
+checkbutton .nup.max -variable scale -onvalue "max" -offvalue "" -text max
+pack .nup.label .nup.mb .nup.max -side left -fill x
+pack .nup -fill x
+
+frame .printer
+label .printer.label -text "Printer:" -width $lw
+selmenu .printer.name printer [lsort $printers] $pw
+pack .printer.label .printer.name -side left -fill x
+pack .printer -fill x
+
+frame .buttons
+button .buttons.cancel -text Cancel -command "destroy ."
+button .buttons.print -text Print -command print
+pack .buttons.cancel .buttons.print -side left -fill x -expand yes
+pack .buttons -fill x -expand yes
+
+proc print {} \
+{ global nup firstpage lastpage printer scale
+  puts "OK"
+  puts "nup = $nup"
+  puts "scale = $scale"
+  if {[string length "$firstpage$lastpage"]} \
+  { puts "pages= $firstpage-$lastpage" }
+  puts "printer = $printer"
+  destroy .
+}
+
+### OPT_DEFAULT
+copies      = 1
+verbose     = 1
+nup         = 2
+scale       = max
+duplex      = 1
+tumble      = 0
+staple      = 0
+landscape   = auto
+paper       = A4
+bbmethod    = auto
+pdfmethod   = auto
+margin      = 2%
+innermargin = 2%
+number-font = helvetica
+number-size = 12
+number-pady = 5
+number-padx = 0
+printer     = *default
+printers(default)    = lpr -Pkiwi
+printers(kiwi)       = lpr -Pkiwi
+printers(grape)      = lpr -Pgrape
+
+### OPT_X
+bbpages     = -20
+verbose     = 0
+nup         = 2
+printer     = default
+
+### OPT_PSX
+verbose     = 1
+
+### OPT_XLPR
+x           = 1
+scale       = max
+
+### OPT_PSMAX2
+nup         = 2
+scale       = max
+verbose     = 1
+innermargin = 2%
+margin      = 4%
+
+### OPT_PSMAX4
+nup         = 4
+scale       = max
+verbose     = 1
+innermargin = 2%
+margin      = 4%
