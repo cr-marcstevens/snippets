@@ -106,9 +106,8 @@ namespace parallel_algorithms {
 	};
 
 
-
 	template<typename RandIt, typename Pred, typename Threadpool>
-	RandIt partition(RandIt first, RandIt last, Pred pred, Threadpool& threadpool, const std::size_t chunksize = 4096)
+	RandIt partition(RandIt first, RandIt last, Pred pred, Threadpool& threadpool, const std::size_t chunksize = 1024)
 	{
 		const std::size_t dist = last-first;
 
@@ -204,10 +203,6 @@ namespace parallel_algorithms {
 			std::size_t lowbeg = low_todo_interval[li].first, lowend = low_todo_interval[li].second, lowsize = lowend-lowbeg;
 			std::size_t highbeg = high_todo_interval[hi].first, highend = high_todo_interval[hi].second, highsize = highend-highbeg;
 			std::size_t size = std::min(lowsize, highsize);
-			assert(lowend < mid);
-			assert(mid < highbeg);
-			assert(lowsize <= chunksize);
-			assert(highsize <= chunksize);
 
 			std::swap_ranges(first + lowbeg, first + (lowbeg+size), first + (highbeg + highsize-size));
 			low_todo_interval[li].first += size;
@@ -264,7 +259,7 @@ namespace parallel_algorithms {
 	}
 	
 	template<typename RandIt, typename Compare, typename Threadpool>
-	void nth_element(RandIt first, RandIt nth, RandIt last, Compare cf, Threadpool& threadpool, std::size_t chunksize = 4096)
+	void nth_element(RandIt first, RandIt nth, RandIt last, Compare cf, Threadpool& threadpool, std::size_t chunksize = 1024)
 	{
 		typedef typename std::iterator_traits<RandIt>::difference_type difference_type;
 		typedef typename std::iterator_traits<RandIt>::value_type value_type;
@@ -301,10 +296,66 @@ namespace parallel_algorithms {
 	}
 	
 	template<typename RandIt, typename Threadpool>
-	void nth_element(RandIt first, RandIt nth, RandIt last, Threadpool& threadpool, std::size_t chunksize = 4096)
+	void nth_element(RandIt first, RandIt nth, RandIt last, Threadpool& threadpool, std::size_t chunksize = 1024)
 	{
 		typedef typename std::iterator_traits<RandIt>::value_type value_type;
 		nth_element(first, nth, last, std::less<value_type>(), threadpool, chunksize);
+	}
+
+
+	template<typename RandIt, typename Compare, typename Threadpool>
+	RandIt merge(RandIt first1, RandIt last1, RandIt first2, RandIt last2, RandIt dest, Compare cf, Threadpool& threadpool)
+	{
+		typedef typename std::iterator_traits<RandIt>::difference_type difference_type;
+		typedef typename std::iterator_traits<RandIt>::value_type value_type;
+
+		difference_type size1 = last1-first1, size2=last2-first2;
+		if (size1+size2 < 65536)
+			return std::merge(first1, last1, first2, last2, dest, cf);
+		if (size1 < size2)
+			return merge(first2, last2, first1, last1, dest, cf, threadpool);
+
+		std::size_t threads = threadpool.size()+1;
+		std::size_t o2 = 0, od = 0;
+
+		#pragma omp parallel
+		{
+		#pragma omp single
+		{
+		for (std::size_t i = 0; i < threads-1; ++i)
+		{
+			subinterval iv1(size1, i, threads);
+			RandIt iv1first = first1+*iv1.begin(), iv1last = first1+*iv1.end();
+			RandIt iv2first = first2+o2;
+			RandIt iv2last = first2 + (std::upper_bound(iv2first, last2, *iv1last, cf) - first2);
+
+			#pragma omp task
+				{ std::merge(iv1first, iv1last, iv2first, iv2last, dest+od, cf); }
+//			threadpool.push( [=]()
+//				{
+//					std::merge(iv1first, iv1last, iv2first, iv2last, dest+od, cf);
+//				});
+			difference_type iv1size = iv1.end()-iv1.begin(), iv2size=iv2last-iv2first;
+			od += iv1size+iv2size;
+			o2 += iv2size;
+		}
+		subinterval iv1(size1, threads-1, threads);
+		std::merge(first1+*iv1.begin(), last1, first2+o2, last2, dest+od, cf);
+
+//		threadpool.wait_sleep();
+		#pragma omp taskwait
+
+		} // single
+		} // parallel
+
+		return dest+od;
+	}
+
+	template<typename RandIt, typename Threadpool>
+	RandIt merge(RandIt first1, RandIt last1, RandIt first2, RandIt last2, RandIt dest, Threadpool& threadpool)
+	{
+		typedef typename std::iterator_traits<RandIt>::value_type value_type;
+		return merge(first1, last1, first2, last2, dest, std::less<value_type>(), threadpool);
 	}
 	
 } // namespace parallel_algorithms
