@@ -17,33 +17,36 @@ void test(int id, Cont& input, std::size_t i, Threadpool& threadpool, std::size_
    value_type x = input[i];
 
    Cont input2;
-   
+
+//   namespace def = std;
+   namespace def = __gnu_parallel;
+
    switch (id)
    {
       default: throw;
+
       case 1:
          pa::partition(input.begin(), input.end(), [=](const value_type& y) { return y<x; }, threadpool, chunksize);
          return;
       case 2:
-         __gnu_parallel::partition(input.begin(), input.end(), [=](const value_type& y) { return y<x; });
+         def::partition(input.begin(), input.end(), [=](const value_type& y) { return y<x; });
          return;
-         
+
       case 3:
          pa::nth_element(input.begin(), input.begin()+i, input.end(), threadpool, chunksize);
          return;
       case 4:
-         __gnu_parallel::nth_element(input.begin(), input.begin()+i, input.end());
+         def::nth_element(input.begin(), input.begin()+i, input.end());
          return;
-         
+
       case 5:
          input2 = input;
          pa::merge(input.begin(), input.begin()+i, input.begin()+i, input.end(), input2.begin(), threadpool);
          input.swap(input2);
          return;
-         
       case 6:
          input2 = input;
-         __gnu_parallel::merge(input.begin(), input.begin()+i, input.begin()+i, input.end(), input2.begin());
+         def::merge(input.begin(), input.begin()+i, input.begin()+i, input.end(), input2.begin());
          input.swap(input2);
          return;
    };
@@ -51,18 +54,18 @@ void test(int id, Cont& input, std::size_t i, Threadpool& threadpool, std::size_
 
 int main(int argc, char** argv)
 {
-   tp::thread_pool threadpool(37);
-   std::cout << threadpool.size() << std::endl;
-   
-   omp_set_dynamic(false);
-   omp_set_num_threads(38);
-   
-   std::random_device r;
-   std::default_random_engine prng(r());
-   
-   
-   for (std::size_t chunksize = 256; chunksize <= 8192; chunksize *=2)
-   {
+ tp::thread_pool threadpool(19);
+ std::cout << threadpool.size() << std::endl;
+
+ omp_set_dynamic(false);
+ omp_set_num_threads(20);
+
+ std::random_device r;
+ std::default_random_engine prng(r());
+
+
+ for (std::size_t chunksize = 1024; chunksize <= 8192; chunksize *=2)
+ {
    std::cout << chunksize << std::endl;
 
    double tottime1 = 0, tottime2 = 0;
@@ -70,26 +73,25 @@ int main(int argc, char** argv)
 
    for (int cn = 0; cn < 128; ++cn)
    {
-      std::size_t size = 1 << 25;//(20+ (prng() % 10));
-      std::size_t nth = prng() % size;
+      std::size_t size = 1 << 25 + (prng()%2);//(20+ (prng() % 10));
+      std::size_t nth = (prng() % size) /2 + size/4;
       std::vector<unsigned> rndvec(size);
       for (auto& x : rndvec)
          x = prng();
-      
-      unsigned x = rndvec[nth];
 
 //      int testid = 1; // partition
-//      int testid = 3; // nth_element
-      int testid = 5; // merge
-      
+      int testid = 3; // nth_element
+//      int testid = 5; // merge
+
       if (testid == 5)
       {
          __gnu_parallel::sort(rndvec.begin(), rndvec.begin()+nth);
          __gnu_parallel::sort(rndvec.begin()+nth, rndvec.end());
       }
 
+      unsigned x = rndvec[nth];
       auto rndvec2 = rndvec;
-      
+
       auto begt =  std::chrono::high_resolution_clock::now();
       test(testid,   rndvec,  nth, threadpool, chunksize);
       auto midt =  std::chrono::high_resolution_clock::now();
@@ -102,27 +104,39 @@ int main(int argc, char** argv)
       tottime1 += time1; tottime2 += time2; ++timecnt;
 //      std::cout << time1 << " " << std::flush;
 
-      switch (testid) {
-         default: throw;
-         case 1:
-            for (std::size_t i = 0; i < rndvec.size(); ++i)
-               if ((rndvec[i]<x) != (rndvec2[i]<x))
-                  throw;
-            break;
+      if (1)
+      {
+         std::size_t bad = 0;
+         switch (testid) {
+            default: throw;
+            case 1:
+               for (std::size_t i = 0; i < rndvec.size(); ++i)
+                  if ((rndvec[i]<x) != (rndvec2[i]<x))
+                  {
+                     std::cout << "i=" << i << " x=" << x << " rvi=" << rndvec[i] << " rv2i=" << rndvec2[i] << " " << (rndvec[i]<x) << (rndvec2[i]<x) << std::endl;
+                     ++bad;
+                  }
+               break;
             
-         case 3:
-            if (rndvec[nth] != rndvec2[nth])
-               throw;
-            break;
+            case 3:
+               if (rndvec[nth] != rndvec2[nth])
+                     throw std::runtime_error("test failed");
+               break;
             
-         case 5:
-            if (rndvec != rndvec2)
-               throw;
-            break;
-      };
-      
+            case 5:
+               if (rndvec != rndvec2)
+                     throw std::runtime_error("test failed");
+               break;
+         };
+         if (bad)
+         {
+            std::cout << "bad=" << bad << std::endl;
+            throw std::runtime_error("test failed");
+         }
+      }
    }
-      std::cout << "\n" << chunksize << ": " << tottime1/double(timecnt) << " " << tottime2/double(timecnt) << std::endl;
-   }
-   return 0;
+   std::cout << "\n" << chunksize << ": " << tottime1/double(timecnt) << " " << tottime2/double(timecnt) << std::endl;
+//   break;
+ }
+ return 0;
 }

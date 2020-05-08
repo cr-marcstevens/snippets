@@ -109,153 +109,171 @@ namespace parallel_algorithms {
 	template<typename RandIt, typename Pred, typename Threadpool>
 	RandIt partition(RandIt first, RandIt last, Pred pred, Threadpool& threadpool, const std::size_t chunksize = 1024)
 	{
+		typedef typename std::iterator_traits<RandIt>::difference_type difference_type;
+		typedef typename std::iterator_traits<RandIt>::value_type value_type;
+
 		const std::size_t dist = last-first;
 
-		unsigned nr_threads = std::min(threadpool.size()+1, (dist-chunksize)/(chunksize*2) );
-		if (nr_threads <= 1 || dist <= chunksize*4)
+		unsigned nr_threads = std::min(threadpool.size()+1, dist/(chunksize*2) );
+		if (nr_threads <= 2 || dist <= chunksize*4)
 			return std::partition(first, last, pred);
-		
-		std::pair<std::size_t,std::size_t> low_todo_interval[nr_threads], high_todo_interval[nr_threads];
-		std::fill(low_todo_interval+0, low_todo_interval+nr_threads, std::pair<std::size_t,std::size_t>(0,0));
-		std::fill(high_todo_interval+0, high_todo_interval+nr_threads, std::pair<std::size_t,std::size_t>(0,0));
-		
-		std::atomic_size_t low(nr_threads*chunksize), high(dist - (nr_threads+1)*chunksize);
-		threadpool.run([=,&low_todo_interval,&high_todo_interval,&low,&high](int i, int n)
-			{
-				low_todo_interval[i] = high_todo_interval[i] = std::pair<std::size_t,std::size_t>(0,0);
-				std::size_t mylow = i*chunksize, myhigh = dist - (i+1)*chunksize;
-				auto mylowit = first+mylow;
-				auto myhighit = first+myhigh;
 
-				int l = 0, h = chunksize-1;
-				bool stop = false;
+		typedef std::pair<std::size_t,std::size_t> size_pair;
+		std::vector< size_pair > low_false_interval(nr_threads, size_pair(dist,dist));
+		std::vector< size_pair > high_true_interval(nr_threads, size_pair(dist,dist));
+
+		// we know there is enough room to give two chunks per thread (one at the begin, one at the end) at the start
+		// low and high point to the *beginning* of the next available chunk, so low<=high
+		std::atomic_size_t low(nr_threads*chunksize), high(dist - ((nr_threads+1)*chunksize));
+		std::atomic_size_t usedchunks(2*nr_threads);
+		const std::size_t availablechunks=dist/chunksize;
+
+		// each thread processes on a 'low' and a 'high' chunk, obtaining a new chunk whenever one is fully processed.
+		threadpool.run([&,first,last,dist,pred,chunksize,availablechunks](int thi, int thn)
+			{
+				std::size_t mylow = thi*chunksize, myhigh = dist-(thi+1)*chunksize;
+				auto lowfirst=first+mylow, lowlast=lowfirst+chunksize, lowit=lowfirst;
+				auto highfirst=first+myhigh, highlast=highfirst+chunksize, highit=highfirst;
+				value_type tmp;
+
 				while (true)
 				{
-					// scan for next low element with pred = false
-					while (true)
+					for (; lowit != lowlast; ++lowit)
 					{
-						for (; l < chunksize; ++l)
-							if (false == pred(*(mylowit+l)))
-								break;
-						if (l < chunksize)
+						if (true == pred(*lowit))
+							continue;
+						for (; highit != highlast && false == pred(*highit); ++highit)
+							;
+						if (highit == highlast)
 							break;
-						mylow = low.fetch_add(chunksize);
-						if (mylow + chunksize >= high) { stop = true; low -= chunksize; break; } // stopping condition
-						mylowit = first+mylow;
-						l = 0;
+						std::iter_swap(lowit,highit);
+						++highit;
 					}
-					// scan for next high element with pred = true
-					while (true)
+					if (lowit == lowlast)
 					{
-						for (; h >= 0; --h)
-							if (true == pred(*(myhighit+h)))
-								break;
-						if (h >= 0)
+						if (usedchunks.fetch_add(1) < availablechunks)
+						{
+							mylow = low.fetch_add(chunksize);
+							lowit = lowfirst = first+mylow; lowlast = lowfirst+chunksize;
+						} else
 							break;
-						myhigh = high.fetch_sub(chunksize);
-						if (low + chunksize >= myhigh) { stop = true; high += chunksize; break; } // stopping condition
-						myhighit = first+myhigh;
-						h = chunksize - 1;
 					}
-					if (!stop)
+					if (highit == highlast)
 					{
-						std::iter_swap(mylowit+l, myhighit+h);
-						++l; --h;
-						continue;
+						if (usedchunks.fetch_add(1) < availablechunks)
+						{
+							myhigh = high.fetch_sub(chunksize);
+							highit = highfirst = first+myhigh; highlast = highfirst+chunksize;
+						} else
+							break;
 					}
-					// we have to stop, so we store any unprocessed intervals 
-					if (l < chunksize)
-					{
-						auto it = std::partition(mylowit+l, mylowit+chunksize, pred);
-						l = it - mylowit;
-						if (l < chunksize)
-							low_todo_interval[i] = std::pair<std::size_t,std::size_t>(mylow+l, mylow+chunksize);
-					}
-					if (h >= 0)
-					{
-						auto it = std::partition(myhighit, myhighit+h+1, pred);
-						h = it - myhighit;
-						if (h > 0)
-							high_todo_interval[i] = std::pair<std::size_t,std::size_t>(myhigh, myhigh+h);
-					}
-					return;
 				}
+
+				if (lowit != lowlast)
+				{
+					auto lm = std::partition(lowit, lowlast, pred);
+					low_false_interval[thi] = size_pair(lm-first, lowlast-first);
+				} else
+					low_false_interval[thi] = size_pair(0,0);
+
+				if (highit != highlast)
+				{
+					auto hm = std::partition(highit, highlast, pred);
+					high_true_interval[thi] = size_pair(highit-first, hm-first);
+				} else
+					high_true_interval[thi] = size_pair(0,0);
 			}, nr_threads);
 
-		// swap between lowtodo and hightodo ranges
-		std::sort( low_todo_interval+0, low_todo_interval+nr_threads );
-		std::sort( high_todo_interval+0, high_todo_interval+nr_threads );
-		
-		int li = nr_threads - 1, hi = 0;
-		while (li >=0 && hi < nr_threads)
-		{
-			// find next non-empty low interval
-			for (; li >= 0; --li)
-				if (low_todo_interval[li].first != low_todo_interval[li].second)
-					break;
-			// find next non-empty high interval
-			for (; hi < nr_threads; ++hi)
-				if (high_todo_interval[hi].first != high_todo_interval[hi].second)
-					break;
-			if (hi >= nr_threads) break;
-			if (li < 0) break;
+		assert(low <= high+chunksize);
 
-			std::size_t lowbeg = low_todo_interval[li].first, lowend = low_todo_interval[li].second, lowsize = lowend-lowbeg;
-			std::size_t highbeg = high_todo_interval[hi].first, highend = high_todo_interval[hi].second, highsize = highend-highbeg;
-			std::size_t size = std::min(lowsize, highsize);
+		std::sort( low_false_interval.begin(), low_false_interval.end(), [](size_pair l,size_pair r){return l.first < r.first;});
+		std::sort( high_true_interval.begin(), high_true_interval.end(), [](size_pair l,size_pair r){return l.first < r.first;});
 
-			std::swap_ranges(first + lowbeg, first + (lowbeg+size), first + (highbeg + highsize-size));
-			low_todo_interval[li].first += size;
-			high_todo_interval[hi].second -= size;
-		}
+		// current status:
+		// on range [0,mid)  : pred(*x)=true unless x in some low_todo_interval
+		// on range [mid,end): pred(*x)=false unless x in some high_todo_interval
+		std::size_t mid = std::partition(first+low, first+high+chunksize, pred) - first;
+
+		// compute the final middle
+		std::size_t realmid = mid;
+		for (auto& be : low_false_interval)
+			realmid -= be.second - be.first;
+		for (auto& be : high_true_interval)
+			realmid += be.second - be.first;
+
+		// compute the remaining intervals to swap
+		std::vector< size_pair > toswap_false, toswap_true;
+		std::sort( low_false_interval.begin(), low_false_interval.end() );
+		std::sort( high_true_interval.begin(), high_true_interval.end() );
 		
-		// now there are either no lowtodos or no hightodos anymore
-		auto it = std::partition(first+low, first+high+chunksize, pred);
-		std::size_t mid = it-first;
-		
-		// process remaining lowtodos with respect to mid
-		for (; li >= 0; --li)
+		std::size_t lowdone = 0;
+		for (auto& be : low_false_interval)
 		{
-			std::size_t lowbeg = low_todo_interval[li].first, lowend = low_todo_interval[li].second, lowsize = lowend-lowbeg;
-			if (lowsize == 0)
+			if (be.second - be.first == 0)
 				continue;
-			std::size_t gapsize = mid-lowend;
-			if (gapsize < lowsize)
+			// [lowdone, be.first): pred=true
+			// [be.first, be.second): pred=false
+			if (realmid < be.first)
 			{
-				// swap [lowend,mid) with [lowbeg,lowbeg+gapsize)
-				std::swap_ranges(first+lowend, first+mid, first+lowbeg);
-				mid = lowbeg + gapsize;
+				// we only have to swap [lowdone, be.first) intersect [realmid,be.first)
+				if (lowdone < be.first)
+					toswap_true.emplace_back(std::max(lowdone,realmid),be.first);
+			} else {
+				// we only have to swap [be.first, be.second) intersect [be.first, realmid)
+				if (realmid > be.first);
+					toswap_false.emplace_back(be.first,std::min(be.second,realmid));
 			}
-			else
-			{
-				// swap [lowbeg,lowend) with [mid-lowsize,mid)
-				std::swap_ranges(first+lowbeg, first+lowend, first+(mid-lowsize));
-				mid -= lowsize;
-			}
+			lowdone = be.second;
 		}
-
-		// process remaining hightodos with respect to mid
-		for (; hi < nr_threads; ++hi)
+		// [lowdone,mid): pred=true
+		if (realmid < mid)
 		{
-			std::size_t highbeg = high_todo_interval[hi].first, highend = high_todo_interval[hi].second, highsize = highend-highbeg;
-			if (highsize == 0)
-				continue;
-			std::size_t gapsize = highbeg-mid;
-			if (gapsize < highsize)
-			{
-				// swap [mid,highbeg) with [..,highend)
-				std::swap_ranges(first+mid, first+highbeg, first+(highend-gapsize));
-				mid = highend - gapsize;
-			}
-			else
-			{
-				// swap [highbeg,highend) with [mid,mid+highsize)
-				std::swap_ranges(first+highbeg, first+highend, first+mid);
-				mid += highsize;
-			}
+			// we have to swap [lowdone,mid) intersect [realmid,mid)
+			if (lowdone < mid)
+				toswap_true.emplace_back(std::max(lowdone,realmid),mid);
 		}
 
-		return first+mid;
+		std::size_t highdone = mid;
+		for (auto& be : high_true_interval)
+		{
+			if (be.second - be.first == 0)
+				continue;
+			// [highdone,be.first): pred=false
+			// [be.first, be.second): pred=true
+			if (highdone < realmid && highdone < be.first)
+			{
+				// we have to swap [highdone,be.first) intersect [highdone,realmid)
+				toswap_false.emplace_back(highdone, std::min(be.first, realmid));
+			}
+			if (realmid < be.second)
+			{
+				// we have to swap [be.first, be.second) intersect [realmid, be.second)
+				toswap_true.emplace_back(std::max(be.first,realmid), be.second);
+			}
+			highdone = be.second;
+		}
+		// [highdone,last): pred=false
+		if (realmid > highdone)
+			toswap_false.emplace_back(highdone, realmid);
+
+		// swap the remaining intervals
+		while (!toswap_false.empty() && !toswap_true.empty())
+		{
+			auto& swf = toswap_false.back();
+			auto& swt = toswap_true.back();
+			assert(swf.first <= swf.second);
+			assert(swt.first <= swt.second);
+			std::size_t count = std::min(swf.second-swf.first, swt.second-swt.first);
+			std::swap_ranges(first+swf.first, first+(swf.first+count), first+swt.first);
+			swf.first += count;
+			swt.first += count;
+			if (swf.first == swf.second)
+				toswap_false.pop_back();
+			if (swt.first == swt.second)
+				toswap_true.pop_back();
+		}
+		assert(toswap_false.empty() && toswap_true.empty());
+		return first+realmid;
 	}
 	
 	template<typename RandIt, typename Compare, typename Threadpool>
@@ -263,11 +281,9 @@ namespace parallel_algorithms {
 	{
 		typedef typename std::iterator_traits<RandIt>::difference_type difference_type;
 		typedef typename std::iterator_traits<RandIt>::value_type value_type;
-		std::size_t threads = threadpool.size()+1;
 		while (true)
 		{
-			assert(first <= nth);
-			assert(nth < last);
+			assert(first <= nth && nth < last);
 			
 			difference_type len = last - first;
 			if (len <= chunksize*4)
@@ -286,7 +302,7 @@ namespace parallel_algorithms {
 			// pick median as pivot and move to end
 			RandIt pivot = last-1;
 			std::iter_swap(first+selectionsize/2, pivot);
-			auto mid = partition(first, pivot, [=](const value_type& r){ return cf(r, *pivot); }, threadpool, chunksize);
+			auto mid = partition(first, pivot, [cf,pivot](const value_type& r){ return cf(r, *pivot); }, threadpool, chunksize);
 			
 			if (nth < mid)
 				last = mid;
@@ -308,47 +324,53 @@ namespace parallel_algorithms {
 	{
 		typedef typename std::iterator_traits<RandIt>::difference_type difference_type;
 		typedef typename std::iterator_traits<RandIt>::value_type value_type;
+		const std::size_t minchunksize = 4096;
 
 		difference_type size1 = last1-first1, size2=last2-first2;
-		if (size1+size2 < 65536)
+		if (size1+size2 < 4*minchunksize)
 			return std::merge(first1, last1, first2, last2, dest, cf);
 		if (size1 < size2)
 			return merge(first2, last2, first1, last1, dest, cf, threadpool);
 
-		std::size_t threads = threadpool.size()+1;
-		std::size_t o2 = 0, od = 0;
+		const std::size_t threads = std::min(threadpool.size()+1, size1/minchunksize);
 
-		#pragma omp parallel
-		{
-		#pragma omp single
-		{
-		for (std::size_t i = 0; i < threads-1; ++i)
-		{
-			subinterval iv1(size1, i, threads);
-			RandIt iv1first = first1+*iv1.begin(), iv1last = first1+*iv1.end();
-			RandIt iv2first = first2+o2;
-			RandIt iv2last = first2 + (std::upper_bound(iv2first, last2, *iv1last, cf) - first2);
-
-			#pragma omp task
-				{ std::merge(iv1first, iv1last, iv2first, iv2last, dest+od, cf); }
-//			threadpool.push( [=]()
-//				{
-//					std::merge(iv1first, iv1last, iv2first, iv2last, dest+od, cf);
-//				});
-			difference_type iv1size = iv1.end()-iv1.begin(), iv2size=iv2last-iv2first;
-			od += iv1size+iv2size;
-			o2 += iv2size;
-		}
-		subinterval iv1(size1, threads-1, threads);
-		std::merge(first1+*iv1.begin(), last1, first2+o2, last2, dest+od, cf);
-
-//		threadpool.wait_sleep();
-		#pragma omp taskwait
-
-		} // single
-		} // parallel
-
-		return dest+od;
+		threadpool.run([=](int thi, int thn)
+			{
+				subinterval iv1(size1, thi, thn);
+				RandIt iv1first=first1+*iv1.begin(), iv1last=first1+*iv1.end();
+				RandIt iv2first=first2, iv2last=last2;
+				if (thi>0)
+					iv2first=std::lower_bound(first2, last2, *iv1first, cf);
+				if (thi<thn-1)
+					iv2last=std::lower_bound(first2, last2, *iv1last, cf);
+				RandIt d = dest+(*iv1.begin()+(iv2first-first2));
+				if (iv2first == iv2last)
+				{
+					std::copy(iv1first,iv1last,d);
+					return;
+				}
+				while (true)
+				{
+					if (cf(*iv1first,*iv2first))
+					{
+						*d = *iv1first; ++d;
+						if (++iv1first == iv1last)
+						{
+							std::copy(iv2first,iv2last,d);
+							return;
+						}
+					} else
+					{
+						*d = *iv2first; ++d;
+						if (++iv2first == iv2last)
+						{
+							std::copy(iv1first,iv1last,d);
+							return;
+						}
+					}
+				}
+			});
+		return dest+(size1+size2);
 	}
 
 	template<typename RandIt, typename Threadpool>
