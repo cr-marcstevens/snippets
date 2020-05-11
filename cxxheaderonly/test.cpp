@@ -49,19 +49,28 @@ void test(int id, Cont& input, std::size_t i, Threadpool& threadpool, std::size_
          def::merge(input.begin(), input.begin()+i, input.begin()+i, input.end(), input2.begin());
          input.swap(input2);
          return;
+
+      case 7:
+         pa::sort(input.begin(), input.end(), threadpool, chunksize);
+         return;
+      case 8:
+         def::sort(input.begin(), input.end());
+         return;
    };
 }
 
 int main(int argc, char** argv)
 {
- tp::thread_pool threadpool(19);
+ tp::thread_pool threadpool(79);
  std::cout << threadpool.size() << std::endl;
 
  omp_set_dynamic(false);
- omp_set_num_threads(20);
+ omp_set_num_threads(80);
 
  std::random_device r;
- std::default_random_engine prng(r());
+ std::size_t seed = r();
+ std::cout << "seed=" << seed << std::endl;
+ std::default_random_engine prng(seed);
 
 
  for (std::size_t chunksize = 1024; chunksize <= 8192; chunksize *=2)
@@ -73,15 +82,18 @@ int main(int argc, char** argv)
 
    for (int cn = 0; cn < 128; ++cn)
    {
-      std::size_t size = 1 << 25 + (prng()%2);//(20+ (prng() % 10));
+      std::size_t size = 1 << 25;
+//      size = 1 << (15 + (prng() % 10));
+//	size = prng() % size;
       std::size_t nth = (prng() % size) /2 + size/4;
       std::vector<unsigned> rndvec(size);
       for (auto& x : rndvec)
          x = prng();
 
 //      int testid = 1; // partition
-      int testid = 3; // nth_element
+//      int testid = 3; // nth_element
 //      int testid = 5; // merge
+      int testid = 7; // sort
 
       if (testid == 5)
       {
@@ -124,9 +136,11 @@ int main(int argc, char** argv)
                break;
             
             case 5:
+            case 7:
                if (rndvec != rndvec2)
                      throw std::runtime_error("test failed");
                break;
+
          };
          if (bad)
          {
