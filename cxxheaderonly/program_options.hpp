@@ -30,6 +30,7 @@
 #ifndef PROGRAM_OPTIONS_HPP
 #define PROGRAM_OPTIONS_HPP
 
+#include <initializer_list>
 #include <stdexcept>
 #include <memory>
 #include <string>
@@ -98,7 +99,7 @@ int main(int argc, char** argv)
 
 	if (vm.count("help") || (inputfiles.size() == 0 && vm.count("dowork") == 0))
 	{
-		std::cout << cmdopts;
+		print_options_description({cmdopts}); // add other opts as desired in list
 		return 0;
 	}
 	if (vm.count("dowork"))
@@ -477,12 +478,11 @@ namespace program_options {
 		}
 
 		/* print options to outputstream, called from operator<<(ostream&,const options_description&) */
-		void _print(std::ostream& o)
+		size_t _print(std::ostream& o, size_t maxleft = 0) const
 		{
 			if (!_description.empty())
 				o << _description << ":" << std::endl;
 			std::vector<std::string> left(_options.size()), right(_options.size());
-			std::size_t maxleft = 0;
 			for (std::size_t i = 0; i < _options.size(); ++i)
 			{
 				right[i] = _options[i]->description;
@@ -548,12 +548,37 @@ namespace program_options {
 						o << std::string(maxleft+2, ' ');
 				}
 			}
+			return maxleft;
 		}
 
 		std::string _description;
 		std::vector<option> _options;
 		unsigned _linelength, _mindesclength;
 	};
+	// print multiple options_description in two aligned columns
+	template<typename Iterator>
+	inline void print_options_description(std::ostream& o, Iterator begin, Iterator end)
+	{
+		size_t maxleft = 0;
+		std::stringstream nullstream;
+		for (Iterator it = begin; it != end; ++it)
+			maxleft = it->_print(nullstream, maxleft);
+		for (Iterator it = begin; it != end; ++it)
+			it->_print(o, maxleft);
+	}
+	template<typename Iterator>
+	inline void print_options_description(Iterator begin, Iterator end)
+	{
+		print_options_description(std::cout, begin, end);
+	}
+	inline void print_options_description(std::ostream& o, std::initializer_list<options_description> il)
+	{
+		print_options_description(o, il.begin(), il.end());
+	}
+	inline void print_options_description(std::initializer_list<options_description> il)
+	{
+		print_options_description(std::cout, il);
+	}
 
 	/* stores a map of parsed option.name => parser, as well as unrecognized options, positional arguments */
 	struct variables_map
