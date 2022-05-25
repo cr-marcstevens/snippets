@@ -14,7 +14,7 @@ namespace cxxheaderonly {
 
 	class progress_display {
 	public:
-		using std::uint64_t;
+		typedef std::uint64_t uint64;
 
 		explicit progress_display(uint64 expected_count, 
 										bool show_scale = true,
