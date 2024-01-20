@@ -33,6 +33,8 @@
 #include "thread_pool.hpp"
 #include <cassert>
 
+#include <algorithm>
+
 /*************************** example usage ***************************************\
 grep "^//test.cpp" parallel_algoritms.hpp -A34 > test.cpp
 g++ -std=c++11 -o test test.cpp -pthread -lpthread
